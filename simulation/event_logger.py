@@ -46,7 +46,7 @@ class EventLogger:
                 'time', 'batch_id', 'batch_count', 'batch_tokens', 
                 'running_count', 'waiting_count', 'swapped_count', 
                 'gpu_memory_used', 'memory_utilization',
-                'batch_duration', 'completed_count'
+                'batch_duration', 'completed_count', 'batch_sacrifice_count'
             ])
             
             # 写入数据
@@ -66,7 +66,8 @@ class EventLogger:
                     snap.gpu_memory_used,  # GPU上所有请求的内存总和
                     f"{snap.gpu_memory_used / snap.system_memory_total:.4f}",
                     f"{snap.batch_duration:.4f}",
-                    snap.num_completed
+                    snap.num_completed,
+                    snap.batch_sacrifice_count  # 本批次的sacrifice数量
                 ])
         
         print(f"批次快照已保存到: {filepath}")

@@ -8,14 +8,14 @@
 # 1. 生成测试数据
 python data/input/generate_requests.py
 
-# 2. 运行swapping模式仿真
-python experiments/run_swapping.py  
+# 2. 运行高级策略仿真（默认：swap + conservative）
+python experiments/run_advanced.py  
 
-# 3. 生成可视化图表
+# 3. 测试不同策略组合
+python experiments/run_advanced.py --mode sacrifice --strategy aggressive
+
+# 4. 生成可视化图表
 python visualization/plot_dynamics.py
-
-# 或使用一键脚本
-bash scripts/run_basic.sh
 ```
 
 ## 系统参数
@@ -23,7 +23,6 @@ bash scripts/run_basic.sh
 ### 核心系统配置（`config/config.yaml`）
 
 #### 系统参数
-- **`mode`** (字符串): 服务器模式 - `"swapping"` 或 `"sacrifice"`（目前仅实现swapping）
 - **`M_total`** (整数): GPU总内存（token数）（默认：10000）
   - 控制何时触发交换
   - 更大的值减少交换但可能影响批次大小
@@ -37,20 +36,22 @@ bash scripts/run_basic.sh
   - 总批次时间 = d_0 + d_1 * 批次大小
 
 #### 控制策略参数
-- **`queue_policy`** (字符串): 队列调度策略
-  - `"FCFS"`: 先来先服务（默认）
-  - `"priority"`: 基于优先级的调度（未来）
-- **`victim_policy`** (字符串): 交换牺牲者选择策略
-  - `"LIFO"`: 基于enter_running_time的后进先出（默认）
-  - `"FIFO"`: 先进先出
-  - `"random"`: 随机选择
-  - `"LRU"`: 最近最少使用（未来）
-- **`batch_priority`** (字符串): 批次构建优先级
-  - `"standard"`: RUNNING > SWAPPED > WAITING（默认）
+
+系统支持4种策略组合：(swap/sacrifice) × (conservative/aggressive)
+
+- **`preemption_mode`** (字符串): 抢占模式
+  - `"swap"`: 保留KV缓存和进度，交换到CPU（默认）
+  - `"sacrifice"`: 清除KV缓存，重置进度
+- **`preemption_strategy`** (字符串): 抢占策略  
+  - `"conservative"`: 仅在必要时抢占（默认）
+  - `"aggressive"`: 为高优先级请求主动抢占
+- **`allow_waiting_preempt`** (布尔值): WAITING请求是否可触发抢占（默认：false）
+- **`queue_policy`** (字符串): 队列调度策略 - `"FCFS"`
+- **`victim_policy`** (字符串): Victim选择策略 - `"LIFO"`
 
 #### 数据配置
 - **`request_file`** (字符串): 输入请求CSV文件路径
-- **`output_dir`** (字符串): 结果输出目录
+- **`experiments_dir`** (字符串): 实验结果目录（自动生成带时间戳的子目录）
 - **`L_filter`** (整数/null): 最大解码长度过滤器（null = 不过滤）
 
 #### 实验配置
@@ -80,56 +81,73 @@ bash scripts/run_basic.sh
 
 ## 输出文件
 
-所有输出文件保存在 `data/output/` 目录：
+所有输出文件保存在 `data/experiments/experiment_YYYYMMDD_HHMMSS_XXXX/` 目录：
 
 ### 1. **batch_snapshots.csv**
 每次批次执行后的系统状态：
 - `time`: 累积仿真时间
-- `batch_id`: 唯一批次标识符
-- `batch_size`: 批次中的请求数
-- `batch_tokens`: 批次中的总token数
-- `batch_duration`: 该批次的执行时间
+- `batch_id`: 唯一批次标识符  
+- `batch_count`: 实际执行的请求数（受B约束的子集）
+- `batch_tokens`: 执行批次的总token数
+- `running_count`: GPU内存中的所有请求数（≥ batch_count）
 - `waiting_count`: 等待队列中的请求
-- `running_count`: 当前运行的请求
 - `swapped_count`: 交换到CPU的请求
 - `completed_count`: 总完成请求数
 - `gpu_memory_used`: 当前GPU内存使用
 - `memory_utilization`: GPU内存利用率
+- `batch_duration`: 该批次的执行时间
 
-### 2. **request_traces.csv**
+### 2. **request_traces.csv**  
 每个请求的完整生命周期轨迹：
 - `req_id`: 唯一请求标识符
 - `arrival_time`: 请求到达解码节点的时间
 - `prefill_length`: 预填充KV缓存大小
 - `decode_length`: 要解码的token数
-- `completion_time`: 请求完成时间（未完成则为NaN）
-- `first_enter_running_time`: 首次进入RUNNING状态时间
-- `waiting_time`: 在WAITING状态花费的时间
-- `execution_time`: 在RUNNING状态的总时间
-- `swap_count`: 被交换出的次数
+- `completion_time`: 请求完成时间
 - `total_delay`: 端到端延迟
+- `waiting_time`: 等待时间
+- `execution_time`: 执行时间
+- `swap_count`: 被交换出的次数
+- `total_swapped_time`: 总交换时间
+- `sacrifice_count`: 被牺牲的次数
 
 ### 3. **events.csv**
 详细事件日志：
 - `time`: 事件时间戳
-- `event_type`: 事件类型（admit, swap_out, swap_in, complete）
+- `batch_id`: 批次ID
+- `event_type`: 事件类型（arrival, completion, swap_out, swap_in等）
 - `req_id`: 涉及的请求
 - `details`: 额外事件信息
 
-### 4. **memory_events.csv**
+### 4. **queue_timeline.csv**
+队列状态时间线：
+- `time`: 时间戳
+- `batch_id`: 批次ID
+- `queue_type`: 队列类型（waiting/running/swapped）
+- `req_ids`: 队列中的请求ID列表
+
+### 5. **memory_events.csv**
 内存管理事件：
 - `time`: 事件时间戳
-- `event_type`: swap_out 或 swap_in
-- `req_id`: 被交换的请求
-- `memory_before`: 事件前的GPU内存
-- `memory_after`: 事件后的GPU内存
-- `reason`: 交换发生的原因
+- `batch_id`: 批次ID
+- `event`: 事件类型（swap_out/swap_in/arrival/completion）
+- `req_id`: 相关请求
+- `decode_position`: 解码位置
+- `memory_change`: 内存变化
+- `gpu_memory_after`: 事件后的GPU内存
 
-### 5. **summary.txt**
+### 6. **summary.txt**
 人类可读的汇总报告，包括：
 - 基本统计（总时间、批次、完成数）
 - 系统统计（队列长度、交换次数）
 - 性能指标（吞吐量、延迟、利用率）
+- Sacrifice统计（如果使用sacrifice模式）
+
+### 7. **config_used.yaml**
+实验使用的完整配置快照
+
+### 8. **experiment_meta.yaml**  
+实验元数据（时间、路径、策略组合等）
 
 ## 使用示例
 
@@ -137,7 +155,7 @@ bash scripts/run_basic.sh
 ```bash
 # 生成标准负载并运行仿真
 python data/input/generate_requests.py --num_requests 100
-python experiments/run_swapping.py
+python experiments/run_advanced.py
 python visualization/plot_dynamics.py
 ```
 
@@ -145,38 +163,46 @@ python visualization/plot_dynamics.py
 ```bash
 # 生成高负载场景
 python data/input/generate_requests.py --scenario heavy --num_requests 200
-python experiments/run_swapping.py --requests data/input/requests.csv
+python experiments/run_advanced.py --requests data/input/requests.csv
 ```
 
-### 参数调优
-```bash
-# 编辑 config/config.yaml 修改参数，然后运行：
-python experiments/run_swapping.py --config config/config.yaml
+### 策略组合测试
+```bash  
+# 测试不同策略组合
+# Swap + Conservative（默认）
+python experiments/run_advanced.py
+
+# Swap + Aggressive
+python experiments/run_advanced.py --mode swap --strategy aggressive
+
+# Sacrifice + Conservative  
+python experiments/run_advanced.py --mode sacrifice --strategy conservative
+
+# Sacrifice + Aggressive
+python experiments/run_advanced.py --mode sacrifice --strategy aggressive
+
+# 或自动测试所有4种组合
+python experiments/test_all_strategies.py
 ```
 
-### 批量实验
+### 实验管理
 ```bash
-# 运行不同参数的实验
-bash scripts/run_experiments.sh
+# 列出所有实验
+ls data/experiments/
 
-# 比较不同场景
-bash scripts/run_scenarios.sh
+# 查看最新实验的汇总
+cat data/experiments/experiment_*/summary.txt
 
-# 完整流程与清理
-bash scripts/run_full_pipeline.sh
+# 清理旧实验结果
+bash scripts/clean.sh
 ```
 
 ## Shell脚本
 
 位于 `scripts/` 目录：
 
-- **`run_basic.sh`**: 标准工作流（生成 → 仿真 → 可视化）
-- **`run_experiments.sh`**: 参数扫描实验
-- **`run_scenarios.sh`**: 比较normal/heavy/bursty场景
-- **`run_full_pipeline.sh`**: 完整流程与所有分析
 - **`clean.sh`**: 清理输出目录
-
-所有脚本支持通过直接编辑脚本文件修改参数。
+- **`manage_experiments.sh`**: 实验管理工具
 
 ## 可视化
 
@@ -216,7 +242,7 @@ with open("custom_requests.csv", "w") as f:
 ```
 
 ### 修改控制策略
-编辑 `control/default_policy.py` 实现自定义调度或交换策略。
+编辑 `control/advanced_policy.py` 实现自定义调度或抢占策略。
 
 ### 分析结果
 使用pandas分析CSV输出：
@@ -235,58 +261,39 @@ traces = pd.read_csv(f"{latest_exp}/request_traces.csv")
 print(f"平均延迟: {traces['total_delay'].mean():.2f}")
 print(f"P95延迟: {traces['total_delay'].quantile(0.95):.2f}")
 print(f"交换率: {(traces['swap_count'] > 0).mean():.2%}")
+print(f"牺牲率: {(traces['sacrifice_count'] > 0).mean():.2%}")
 ```
 
-### 实验管理
-使用实验管理工具：
-```bash
-# 列出所有实验
-./scripts/manage_experiments.sh list
-
-# 查看实验详情
-./scripts/manage_experiments.sh details experiment_20241215_143022_1234
-
-# 比较两个实验
-./scripts/manage_experiments.sh compare experiment_1 experiment_2
-
-# 归档旧实验（超过7天）
-./scripts/manage_experiments.sh archive 7
-
-# 导出实验数据
-./scripts/manage_experiments.sh export experiment_name output.tar.gz
-```
 
 ## 项目结构
 
 ```
 fluid_ode_simulation/
 ├── config/              # 配置文件
-│   └── config.yaml     # 主配置
+│   ├── config.yaml          # 主配置（支持4种策略组合）
+│   └── advanced_test.yaml   # 测试配置（较小参数）
 ├── core/               # 核心数据结构
 │   ├── request.py      # Request类
 │   └── system_state.py # 系统状态管理
 ├── simulation/         # 仿真引擎
-│   ├── vllm_simulator.py      # 主仿真器（支持swap和sacrifice模式）
-│   └── event_logger.py        # 事件日志
+│   ├── vllm_simulator.py      # 统一仿真器（支持所有4种策略组合）
+│   └── event_logger.py        # 事件日志和CSV输出
 ├── control/            # 控制策略
-│   └── default_policy.py      # FCFS + LIFO策略
+│   ├── base_policy.py         # 策略基类
+│   └── advanced_policy.py     # 高级策略（实现4种组合）
 ├── data/              
 │   ├── input/         # 输入数据生成
 │   │   └── generate_requests.py
 │   ├── experiments/   # 实验结果目录
 │   │   └── experiment_*  # 带时间戳的实验目录
-│   └── output/        # 旧输出目录（已废弃）
 ├── experiments/        # 实验脚本
-│   └── run_swapping.py
+│   ├── run_advanced.py        # 主运行脚本
+│   └── test_all_strategies.py # 测试所有策略组合
 ├── visualization/      # 绘图工具
 │   └── plot_dynamics.py
-├── scripts/           # 自动化Shell脚本
-│   ├── run_basic.sh   # 基础运行脚本
-│   ├── run_experiments.sh  # 参数扫描实验
-│   ├── run_scenarios.sh    # 场景比较
-│   ├── run_full_pipeline.sh # 完整流水线
-│   ├── manage_experiments.sh # 实验管理工具
-│   └── clean.sh        # 清理脚本
+├── scripts/           # Shell脚本
+│   ├── clean.sh             # 清理脚本
+│   └── manage_experiments.sh # 实验管理工具
 └── CLAUDE.md          # 详细技术文档
 ```
 
@@ -294,9 +301,16 @@ fluid_ode_simulation/
 
 ### 常见问题
 
-1. **负等待时间**: 当前版本已修复 - 请求现在正确等待其到达时间
+1. **如何选择策略组合？**
+   - **swap + conservative**: 稳定负载、长请求
+   - **swap + aggressive**: 平衡性能，vLLM默认
+   - **sacrifice + conservative**: 短请求、简单高效
+   - **sacrifice + aggressive**: 突发负载、严格优先级
 
-2. **无swap_in事件**: 已修复 - swap恢复机制现已正常工作
+2. **batch_count vs running_count的区别？**
+   - `batch_count`: 实际执行的请求数（受B约束）
+   - `running_count`: GPU内存中的所有请求数
+   - 关系：`batch_count ≤ running_count`
 
 3. **内存溢出**: 减少配置中的`B`参数或增加`M_total`
 
@@ -307,7 +321,6 @@ fluid_ode_simulation/
 - 对于大规模实验，禁用verbose输出
 - 使用二分搜索进行参数调优
 - 监控`data/experiments/*/summary.txt`获取快速指标
-- 使用`manage_experiments.sh stats`查看总体统计
 - 调整`progress_interval`减少更新频率
 
 ## 参考文献

@@ -20,6 +20,7 @@ from core.system_state import SystemState
 from control.advanced_policy import AdvancedPolicy
 from simulation.vllm_simulator import VLLMSimulator
 from simulation.event_logger import EventLogger
+from visualization.draw import plot_queue_dynamics
 
 
 def load_config(config_path: str = "config/advanced_test.yaml") -> dict:
@@ -207,6 +208,8 @@ def run_experiment(config_path: str = "config/advanced_test.yaml",
             print(f"\nSacrifice统计:")
             print(f"  总sacrifice次数: {total_sacrifices}")
             print(f"  平均每请求sacrifice: {total_sacrifices/len(results['requests']):.2f}")
+        else:
+            print("\n没有发生sacrifice操作")
     
     # 保存结果
     print("\n保存结果...")
@@ -232,6 +235,54 @@ def run_experiment(config_path: str = "config/advanced_test.yaml",
     
     print(f"\n实验完成！")
     print(f"结果保存在: {output_dir}")
+    
+    # 生成可视化图表
+    print("\n生成可视化图表...")
+    
+    # 获取请求到达结束时间（读取请求CSV文件的最后一行）
+    arrival_end = None
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            if rows:
+                last_row = rows[-1]
+                arrival_end = float(last_row['arrival_time'])
+                print(f"请求到达结束时间: {arrival_end:.2f}")
+    except Exception as e:
+        print(f"无法获取请求到达结束时间: {e}")
+    
+    # 调用可视化函数，传递所有系统参数
+    batch_snapshots_path = os.path.join(output_dir, 'batch_snapshots.csv')
+    if os.path.exists(batch_snapshots_path):
+        try:
+            # 从配置中获取系统参数
+            M_total = config['system']['M_total']
+            B_total = config['system']['B']
+            d_0 = config['system']['d_0']
+            d_1 = config['system']['d_1']
+            num_reqs = len(requests)
+            
+            print(f"系统参数: M_total={M_total}, B={B_total}, d_0={d_0}, d_1={d_1}")
+            arrival_end_str = f"{arrival_end:.2f}" if arrival_end else "N/A"
+            print(f"请求统计: 总数={num_reqs}, 到达结束时间={arrival_end_str}")
+            
+            # 调用可视化函数
+            plot_queue_dynamics(
+                csv_path=batch_snapshots_path, 
+                arrival_end=arrival_end, 
+                M_total=M_total, 
+                B_total=B_total,
+                d_0=d_0,
+                d_1=d_1,
+                num_requests=num_reqs
+            )
+            print("可视化图表已生成")
+        except Exception as e:
+            print(f"生成可视化图表失败: {e}")
+    else:
+        print("找不到batch_snapshots.csv文件，跳过可视化")
+    
     return results
 
 

@@ -8,14 +8,14 @@ A simulation system for modeling LLM serving with fluid ODEs in the Operations R
 # 1. Generate test data
 python data/input/generate_requests.py
 
-# 2. Run swapping mode simulation
-python experiments/run_swapping.py
+# 2. Run advanced strategy simulation (default: swap + conservative)
+python experiments/run_advanced.py
 
-# 3. Generate visualizations
+# 3. Test different strategy combinations
+python experiments/run_advanced.py --mode sacrifice --strategy aggressive
+
+# 4. Generate visualizations
 python visualization/plot_dynamics.py
-
-# Or use the all-in-one script
-bash scripts/run_basic.sh
 ```
 
 ## System Parameters
@@ -23,7 +23,6 @@ bash scripts/run_basic.sh
 ### Core System Configuration (`config/config.yaml`)
 
 #### System Parameters
-- **`mode`** (string): Server mode - `"swapping"` or `"sacrifice"` (currently only swapping is implemented)
 - **`M_total`** (int): Total GPU memory in tokens (default: 10000)
   - Controls when swapping is triggered
   - Larger values reduce swapping but may affect batch size
@@ -37,20 +36,22 @@ bash scripts/run_basic.sh
   - Total batch time = d_0 + d_1 * batch_size
 
 #### Control Strategy Parameters
-- **`queue_policy`** (string): Queue scheduling policy
-  - `"FCFS"`: First-Come-First-Served (default)
-  - `"priority"`: Priority-based scheduling (future)
-- **`victim_policy`** (string): Swap victim selection policy
-  - `"LIFO"`: Last-In-First-Out based on enter_running_time (default)
-  - `"FIFO"`: First-In-First-Out
-  - `"random"`: Random selection
-  - `"LRU"`: Least Recently Used (future)
-- **`batch_priority`** (string): Batch construction priority
-  - `"standard"`: RUNNING > SWAPPED > WAITING (default)
+
+The system supports 4 strategy combinations: (swap/sacrifice) × (conservative/aggressive)
+
+- **`preemption_mode`** (string): Preemption mode
+  - `"swap"`: Preserve KV cache and progress, swap to CPU (default)
+  - `"sacrifice"`: Clear KV cache, reset progress
+- **`preemption_strategy`** (string): Preemption strategy
+  - `"conservative"`: Preempt only when necessary (default)
+  - `"aggressive"`: Actively preempt for high-priority requests
+- **`allow_waiting_preempt`** (bool): Whether WAITING requests can trigger preemption (default: false)
+- **`queue_policy`** (string): Queue scheduling policy - `"FCFS"`
+- **`victim_policy`** (string): Victim selection policy - `"LIFO"`
 
 #### Data Configuration
 - **`request_file`** (string): Input request CSV file path
-- **`output_dir`** (string): Output directory for results
+- **`experiments_dir`** (string): Experiments directory (auto-generates timestamped subdirectories)
 - **`L_filter`** (int/null): Maximum decode length filter (null = no filter)
 
 #### Experiment Configuration
@@ -80,21 +81,21 @@ When using `data/input/generate_requests.py`:
 
 ## Output Files
 
-All output files are saved in `data/output/` directory:
+All output files are saved in `data/experiments/experiment_YYYYMMDD_HHMMSS_XXXX/` directory:
 
 ### 1. **batch_snapshots.csv**
 System state after each batch execution:
 - `time`: Cumulative simulation time
 - `batch_id`: Unique batch identifier
-- `batch_size`: Number of requests in batch
-- `batch_tokens`: Total tokens in batch
-- `batch_duration`: Execution time of this batch
+- `batch_count`: Actual executed requests (subset constrained by B)
+- `batch_tokens`: Total tokens in execution batch
+- `running_count`: All requests in GPU memory (≥ batch_count)
 - `waiting_count`: Requests in waiting queue
-- `running_count`: Requests currently running
 - `swapped_count`: Requests swapped to CPU
 - `completed_count`: Total completed requests
 - `gpu_memory_used`: Current GPU memory usage
 - `memory_utilization`: GPU memory utilization ratio
+- `batch_duration`: Execution time of this batch
 
 ### 2. **request_traces.csv**
 Complete lifecycle trace for each request:
@@ -102,34 +103,51 @@ Complete lifecycle trace for each request:
 - `arrival_time`: When request arrived at decode node
 - `prefill_length`: Size of prefill KV cache
 - `decode_length`: Number of tokens to decode
-- `completion_time`: When request completed (or NaN if not completed)
-- `first_enter_running_time`: First time entering RUNNING state
-- `waiting_time`: Time spent in WAITING state
-- `execution_time`: Total time in RUNNING state
-- `swap_count`: Number of times swapped out
+- `completion_time`: When request completed
 - `total_delay`: End-to-end latency
+- `waiting_time`: Time spent waiting
+- `execution_time`: Time spent executing
+- `swap_count`: Number of times swapped out
+- `total_swapped_time`: Total time swapped
+- `sacrifice_count`: Number of times sacrificed
 
 ### 3. **events.csv**
 Detailed event log:
 - `time`: Event timestamp
-- `event_type`: Type of event (admit, swap_out, swap_in, complete)
+- `batch_id`: Batch ID
+- `event_type`: Type of event (arrival, completion, swap_out, swap_in, etc.)
 - `req_id`: Request involved
 - `details`: Additional event information
 
-### 4. **memory_events.csv**
+### 4. **queue_timeline.csv**
+Queue state timeline:
+- `time`: Timestamp
+- `batch_id`: Batch ID
+- `queue_type`: Queue type (waiting/running/swapped)
+- `req_ids`: List of request IDs in queue
+
+### 5. **memory_events.csv**
 Memory management events:
 - `time`: Event timestamp
-- `event_type`: swap_out or swap_in
-- `req_id`: Request being swapped
-- `memory_before`: GPU memory before event
-- `memory_after`: GPU memory after event
-- `reason`: Why swap occurred
+- `batch_id`: Batch ID
+- `event`: Event type (swap_out/swap_in/arrival/completion)
+- `req_id`: Related request
+- `decode_position`: Decode position
+- `memory_change`: Memory change
+- `gpu_memory_after`: GPU memory after event
 
-### 5. **summary.txt**
+### 6. **summary.txt**
 Human-readable summary report with:
 - Basic statistics (total time, batches, completions)
 - System statistics (queue lengths, swap counts)
 - Performance metrics (throughput, latency, utilization)
+- Sacrifice statistics (if using sacrifice mode)
+
+### 7. **config_used.yaml**
+Complete configuration snapshot used for the experiment
+
+### 8. **experiment_meta.yaml**
+Experiment metadata (time, paths, strategy combination, etc.)
 
 ## Usage Examples
 
@@ -137,7 +155,7 @@ Human-readable summary report with:
 ```bash
 # Generate standard load and run simulation
 python data/input/generate_requests.py --num_requests 100
-python experiments/run_swapping.py
+python experiments/run_advanced.py
 python visualization/plot_dynamics.py
 ```
 
@@ -145,38 +163,46 @@ python visualization/plot_dynamics.py
 ```bash
 # Generate heavy load scenario
 python data/input/generate_requests.py --scenario heavy --num_requests 200
-python experiments/run_swapping.py --requests data/input/requests.csv
+python experiments/run_advanced.py --requests data/input/requests.csv
 ```
 
-### Parameter Tuning
+### Strategy Combination Testing
 ```bash
-# Edit config/config.yaml to modify parameters, then run:
-python experiments/run_swapping.py --config config/config.yaml
+# Test different strategy combinations
+# Swap + Conservative (default)
+python experiments/run_advanced.py
+
+# Swap + Aggressive
+python experiments/run_advanced.py --mode swap --strategy aggressive
+
+# Sacrifice + Conservative
+python experiments/run_advanced.py --mode sacrifice --strategy conservative
+
+# Sacrifice + Aggressive
+python experiments/run_advanced.py --mode sacrifice --strategy aggressive
+
+# Or automatically test all 4 combinations
+python experiments/test_all_strategies.py
 ```
 
-### Batch Experiments
+### Experiment Management
 ```bash
-# Run experiments with different parameters
-bash scripts/run_experiments.sh
+# List all experiments
+ls data/experiments/
 
-# Compare different scenarios
-bash scripts/run_scenarios.sh
+# View latest experiment summary
+cat data/experiments/experiment_*/summary.txt
 
-# Full pipeline with cleanup
-bash scripts/run_full_pipeline.sh
+# Clean old experiment results
+bash scripts/clean.sh
 ```
 
 ## Shell Scripts
 
 Located in `scripts/` directory:
 
-- **`run_basic.sh`**: Standard workflow (generate → simulate → visualize)
-- **`run_experiments.sh`**: Parameter sweep experiments
-- **`run_scenarios.sh`**: Compare normal/heavy/bursty scenarios
-- **`run_full_pipeline.sh`**: Complete pipeline with all analyses
 - **`clean.sh`**: Clean output directory
-
-All scripts support parameter modification by editing the script files directly.
+- **`manage_experiments.sh`**: Experiment management tool
 
 ## Visualization
 
@@ -216,18 +242,26 @@ with open("custom_requests.csv", "w") as f:
 ```
 
 ### Modifying Control Policies
-Edit `control/default_policy.py` to implement custom scheduling or swapping strategies.
+Edit `control/advanced_policy.py` to implement custom scheduling or preemption strategies.
 
 ### Analyzing Results
 Use pandas to analyze CSV outputs:
 ```python
 import pandas as pd
 
+# Find the latest experiment directory
+import glob
+import os
+
+exp_dirs = glob.glob("data/experiments/experiment_*")
+latest_exp = max(exp_dirs, key=os.path.getmtime)
+
 # Load and analyze results
-traces = pd.read_csv("data/output/request_traces.csv")
+traces = pd.read_csv(f"{latest_exp}/request_traces.csv")
 print(f"Average latency: {traces['total_delay'].mean():.2f}")
 print(f"P95 latency: {traces['total_delay'].quantile(0.95):.2f}")
 print(f"Swap rate: {(traces['swap_count'] > 0).mean():.2%}")
+print(f"Sacrifice rate: {(traces['sacrifice_count'] > 0).mean():.2%}")
 ```
 
 ## Project Structure
@@ -235,24 +269,30 @@ print(f"Swap rate: {(traces['swap_count'] > 0).mean():.2%}")
 ```
 fluid_ode_simulation/
 ├── config/              # Configuration files
-│   └── config.yaml     # Main configuration
+│   ├── config.yaml          # Main configuration (supports 4 strategy combinations)
+│   └── advanced_test.yaml   # Test configuration (smaller parameters)
 ├── core/               # Core data structures
 │   ├── request.py      # Request class
 │   └── system_state.py # System state management
 ├── simulation/         # Simulation engine
-│   ├── vllm_simulator.py      # Main simulator (supports swap & sacrifice)
-│   └── event_logger.py        # Event logging
+│   ├── vllm_simulator.py      # Unified simulator (supports all 4 strategy combinations)
+│   └── event_logger.py        # Event logging and CSV output
 ├── control/            # Control policies
-│   └── default_policy.py      # FCFS + LIFO policy
+│   ├── base_policy.py         # Policy base class
+│   └── advanced_policy.py     # Advanced policy (implements 4 combinations)
 ├── data/              
 │   ├── input/         # Input data generation
 │   │   └── generate_requests.py
-│   └── output/        # Simulation outputs
+│   └── experiments/   # Experiment results
+│       └── experiment_*  # Timestamped experiment directories
 ├── experiments/        # Experiment scripts
-│   └── run_swapping.py
+│   ├── run_advanced.py        # Main run script
+│   └── test_all_strategies.py # Test all strategy combinations
 ├── visualization/      # Plotting tools
 │   └── plot_dynamics.py
-├── scripts/           # Shell scripts for automation
+├── scripts/           # Shell scripts
+│   ├── clean.sh             # Cleanup script
+│   └── manage_experiments.sh # Experiment management tool
 └── CLAUDE.md          # Detailed technical documentation
 ```
 
@@ -260,9 +300,16 @@ fluid_ode_simulation/
 
 ### Common Issues
 
-1. **Negative waiting times**: Fixed in current version - requests now properly wait for their arrival time
+1. **How to choose strategy combination?**
+   - **swap + conservative**: Stable load, long requests
+   - **swap + aggressive**: Balanced performance, vLLM default
+   - **sacrifice + conservative**: Short requests, simple and efficient
+   - **sacrifice + aggressive**: Burst load, strict priorities
 
-2. **No swap_in events**: Known issue - swap restoration mechanism needs tuning
+2. **Difference between batch_count and running_count?**
+   - `batch_count`: Actually executed requests (constrained by B)
+   - `running_count`: All requests in GPU memory
+   - Relationship: `batch_count ≤ running_count`
 
 3. **Memory overflow**: Reduce `B` parameter or increase `M_total` in config
 
@@ -272,7 +319,7 @@ fluid_ode_simulation/
 
 - For large-scale experiments, disable verbose output
 - Use binary search for parameter tuning
-- Monitor `data/output/summary.txt` for quick metrics
+- Monitor `data/experiments/*/summary.txt` for quick metrics
 - Adjust `progress_interval` for less frequent updates
 
 ## References

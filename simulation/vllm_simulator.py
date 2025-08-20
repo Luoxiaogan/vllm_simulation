@@ -154,6 +154,9 @@ class VLLMSimulator(BaseSimulator):
         # 3. 记录批次快照（包含了实际执行批次的信息）
         self.record_snapshot()
         
+        # 重置批次sacrifice计数器（快照已记录了上个批次的sacrifice数量）
+        self.state.batch_sacrifices = 0
+        
         # 4. 计算批次执行时间（基于实际执行的批次）
         duration = self.calculate_batch_duration_for_requests(execution_batch)
         

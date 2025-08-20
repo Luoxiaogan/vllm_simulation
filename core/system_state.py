@@ -37,6 +37,7 @@ class SystemSnapshot:
     
     # 实际执行批次信息（有默认值的字段必须在最后）
     actual_batch_count: int = 0  # 实际执行的请求数（可能小于running_count）
+    batch_sacrifice_count: int = 0  # 本批次期间的sacrifice数量（非累计）
 
 
 class SystemState:
@@ -66,6 +67,8 @@ class SystemState:
         self.total_admitted = 0
         self.total_swapped_out = 0
         self.total_swapped_in = 0
+        self.total_sacrifices = 0  # 累计sacrifice次数
+        self.batch_sacrifices = 0  # 当前批次的sacrifice次数
         
         # 实际执行批次信息（区分于RUNNING列表）
         self.actual_batch_tokens = 0
@@ -216,6 +219,10 @@ class SystemState:
         # 放回等待队列的前端（高优先级）
         request.status = RequestStatus.WAITING
         self.waiting.insert(0, request)  # 插入到队首
+        
+        # 更新sacrifice计数器
+        self.total_sacrifices += 1
+        self.batch_sacrifices += 1
     
     def complete_request(self, request: Request, current_time: float):
         """
@@ -261,7 +268,8 @@ class SystemState:
             num_swapped_out=self.total_swapped_out,
             num_swapped_in=self.total_swapped_in,
             # actual_batch_count在最后，因为它有默认值
-            actual_batch_count=self.actual_batch_count if self.actual_batch_count > 0 else len(self.running)
+            actual_batch_count=self.actual_batch_count if self.actual_batch_count > 0 else len(self.running),
+            batch_sacrifice_count=self.batch_sacrifices
         )
     
     def get_statistics(self) -> Dict[str, Any]:

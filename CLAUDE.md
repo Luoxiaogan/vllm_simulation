@@ -31,9 +31,9 @@
 
 ### 内存模型
 - **GPU内存占用** = Σ(所有RUNNING请求的(prefill_length + current_decode_position))
-- **内存约束**：当GPU内存超过M_total时触发swap-out
-- **Swap策略**：LIFO - 最晚进入RUNNING的请求优先被交换
-- **批次构建优先级**：RUNNING（保持） > SWAPPED（恢复） > WAITING（新增）
+- **内存约束**：当GPU内存超过M_total时触发抢占
+- **执行批次**：从RUNNING中选择子集，受B（token预算）约束
+- **RUNNING ≠ 执行中**：RUNNING表示占用GPU内存，执行批次是其子集
 
 ## 仿真设计
 
@@ -61,17 +61,82 @@ arrival_time, prefill_length, decode_length
 - prefill_length: 预填充KV缓存大小
 - decode_length: 需要解码生成的token数
 
-### 输出数据
-系统生成多个CSV文件，使用统一的批次时间戳：
-1. **batch_snapshots.csv**: 每批次的系统状态快照
-2. **request_traces.csv**: 每个请求的完整轨迹
-3. **memory_events.csv**: 内存管理事件日志
-4. **queue_timeline.csv**: 队列状态时间序列
+### 输出数据文件
 
-### 控制策略
-- **队列策略**：FCFS（First-Come-First-Served）
-- **Swap victim选择**：LIFO（基于进入RUNNING的时间）
-- **批次构建**：严格优先级调度
+系统生成8个文件，保存在带时间戳的实验目录中：
+
+#### 1. batch_snapshots.csv - 批次级快照
+| 列名 | 含义 |
+|------|------|
+| time | 批次执行开始时间 |
+| batch_id | 批次编号 |
+| batch_count | 实际执行的请求数（受B约束） |
+| batch_tokens | 执行批次的总token数 |
+| running_count | GPU内存中的所有请求数 |
+| waiting_count | 等待队列大小 |
+| swapped_count | 被交换到CPU的请求数 |
+| gpu_memory_used | GPU内存使用量 |
+| memory_utilization | 内存利用率 |
+| batch_duration | 批次执行时间 |
+| completed_count | 累计完成数 |
+
+#### 2. request_traces.csv - 请求级轨迹
+| 列名 | 含义 |
+|------|------|
+| req_id | 请求ID |
+| arrival_time | 到达时间 |
+| prefill_length | 预填充长度 |
+| decode_length | 解码长度 |
+| completion_time | 完成时间 |
+| total_delay | 端到端延迟 |
+| waiting_time | 等待时间 |
+| execution_time | 执行时间 |
+| swap_count | 交换次数 |
+| total_swapped_time | 总交换时间 |
+| sacrifice_count | 牺牲次数 |
+
+#### 3. events.csv - 事件日志
+记录arrival、completion、swap_out、swap_in等所有事件
+
+#### 4. queue_timeline.csv - 队列时间线
+记录各队列在每个时间点的成员
+
+#### 5. memory_events.csv - 内存事件
+专门追踪内存相关的变化和抢占事件
+
+#### 6. summary.txt - 汇总报告
+包含基本信息、系统统计、性能指标等
+
+#### 7. config_used.yaml - 配置快照
+保存实验使用的完整配置
+
+#### 8. experiment_meta.yaml - 实验元数据
+记录实验时间、路径、策略等元信息
+
+### 控制策略组合
+
+系统支持4种策略组合：(swap/sacrifice) × (conservative/aggressive)
+
+#### 抢占模式（Preemption Mode）
+- **swap**: 保留KV缓存和解码进度，交换到CPU内存
+- **sacrifice**: 清除KV缓存，重置解码进度到0
+
+#### 抢占策略（Preemption Strategy）
+- **conservative**: 保守策略，仅在内存增长阶段必要时抢占
+- **aggressive**: 激进策略，为高优先级请求主动抢占
+
+#### 4种组合特点
+1. **swap + conservative**: 最稳定，适合长请求和稳定负载
+2. **swap + aggressive**: vLLM默认，平衡性能和公平性  
+3. **sacrifice + conservative**: 简单高效，适合短请求
+4. **sacrifice + aggressive**: 最激进，优先级严格，适合突发负载
+
+#### 其他策略参数
+- **队列调度**: FCFS（First-Come-First-Served）
+- **Victim选择**: LIFO（最晚进入RUNNING的优先被抢占）
+- **准入优先级**: 
+  - Aggressive模式：SWAPPED > WAITING（严格优先级）
+  - Conservative模式：优先恢复但不抢占
 
 ## 流体ODE模型
 
@@ -160,9 +225,15 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 ## 代码结构
 
 ### 核心模块
-- **core/**: 基础数据结构（Request, SystemState）
-- **simulation/**: 仿真引擎（VLLMSimulator）
-- **control/**: 控制策略（Policy接口及实现）
+- **core/**: 基础数据结构
+  - request.py: Request类，包含swap/sacrifice事件
+  - system_state.py: 系统状态，管理三个队列
+- **simulation/**: 仿真引擎
+  - vllm_simulator.py: 统一仿真器，支持所有策略组合
+  - event_logger.py: 事件记录和CSV输出
+- **control/**: 控制策略
+  - advanced_policy.py: 高级策略，实现4种组合
+  - base_policy.py: 策略基类
 - **fluid_model/**: ODE系统（方程、参数估计、求解）
 
 ### 分析工具
@@ -180,11 +251,17 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 # 生成测试数据
 python data/input/generate_requests.py
 
-# 运行Swapping模式仿真
-python experiments/run_swapping.py
+# 运行高级策略仿真（使用默认配置）
+python experiments/run_advanced.py
 
-# 验证流体极限
-python experiments/validate_fluid_limit.py
+# 使用特定配置
+python experiments/run_advanced.py --config config/config.yaml
+
+# 命令行指定策略组合
+python experiments/run_advanced.py --mode swap --strategy aggressive
+
+# 测试所有4种策略组合
+python experiments/test_all_strategies.py
 
 # 生成可视化报告
 python visualization/plot_dynamics.py
@@ -194,20 +271,36 @@ python visualization/plot_dynamics.py
 编辑 `config/config.yaml` 调整系统参数：
 ```yaml
 system:
-  mode: "swapping"
-  M_total: 10000
-  B: 2000
-  d_0: 1.0
-  d_1: 0.001
+  M_total: 10000        # GPU内存容量
+  B: 2000              # 批次token预算
+  d_0: 1.0             # 基础执行时间
+  d_1: 0.001           # 每token边际时间
+
+control:
+  preemption_mode: swap          # swap或sacrifice
+  preemption_strategy: conservative  # conservative或aggressive
+  allow_waiting_preempt: false   # WAITING是否可触发抢占
+  queue_policy: FCFS
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/requests.csv
+  experiments_dir: data/experiments
+  L_filter: null       # 最大解码长度过滤
+
+experiment:
+  seed: 42
+  verbose: true
+  progress_interval: 100
 ```
 
 ## 扩展计划
 
 ### Sacrifice模式
-当前为Sacrifice模式预留了接口，未来实现时需要：
-1. 处理请求重置（decode_position归零）
-2. 处理分布偏移问题
-3. 实现对应的ODE系统
+Sacrifice模式已完全实现，通过设置 `preemption_mode: sacrifice` 启用：
+1. 被牺牲的请求重置decode_position为0
+2. 重新加入WAITING队列队首（高优先级）
+3. 支持与conservative/aggressive策略组合
 
 ### 高级功能
 1. 多节点仿真
