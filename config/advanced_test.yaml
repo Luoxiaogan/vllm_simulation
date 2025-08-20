@@ -1,0 +1,36 @@
+# 高级策略测试配置
+# 用于测试不同参数组合的效果
+
+system:
+  # 较小的内存和批次大小，便于观察抢占行为
+  M_total: 2000    # GPU内存（较小，更容易触发抢占）
+  B: 600           # 批次token预算
+  d_0: 0.03        # 批次基础时间
+  d_1: 0.001       # 每token边际时间
+
+control:
+  # 队列调度策略
+  queue_policy: FCFS
+  
+  # ===== 测试不同策略组合 =====
+  # 当前配置：swap + aggressive
+  preemption_mode: swap          # 可改为 "sacrifice"
+  preemption_strategy: aggressive # 可改为 "conservative"
+  
+  # 高级选项
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  # 使用特定的测试数据
+  request_file: data/input/two_types.csv
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 42
+  verbose: true
+  progress_interval: 10  # 更频繁的进度报告，便于调试
+
+# 使用方法：
+# python experiments/run_advanced.py --config config/advanced_test.yaml

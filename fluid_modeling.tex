@@ -1,0 +1,73 @@
+
+\section{New idea about load balancing scheduling.}
+
+Here both the sacrifice and the swapping happened when it reach total the memory bound on the GPU, instead the memory bound of the batch, see \ref{subsec::control_swap}.
+
+\subsection{Fluid dynamics in each node, sacrifice to clear the memory}
+
+$X_i(t)$ is the number of requests \textbf{in the batch} of length $i$ at time $t$, $1\leq i\leq L$, and $L$ is the model max length in the decoding length. $B(t)$ is the number of tokens in the batch, and $B$ is the upper bound of the tokens in the batch(batch budget). $p_i(t)$ is the probability that the queued request is of length $i$, $q_i(t)$ is the probability that the request of length $i$ in the batch will leave the system(completing the decode phase), and $r_i(t)$ is the probability the request of length $i$ in the batch will be sacrificed(clear the memory).
+
+Then we have the following fluid ODE:
+\begin{align*}
+X_{L+1}(t) =0, \;\text{the model max length is $L$}    
+\end{align*}
+Here the model max length is the inherent constant of all LLMs, so this assumption is reasonable.
+\begin{align*}
+    \dot{Q}(t) = \underbrace{\lambda(t)}_{\text{arrival from the prefill}} - \underbrace{S(t)}_{\text{leave to the current batch}} + \frac{1}{d_0+d_1 B(t)} \sum_{i=1}^L \left( \underbrace{X_i(t)r_i(t)}_{\text{sacrificed requests, internal arrival}}  \right)
+\end{align*}
+\begin{align*}
+\dot{X}_{i}(t)=\underbrace{\frac{1}{d_{0}+d_{1}B(t)}}_{\text{computational ability}}\left(  \underbrace{X_{i-1}(t)(1-r_{i-1}(t) -q_{i-1}(t))}_{\text{arrival from } i-1, \text{not sacrificed and completed}}-X_{i}(t)\right)+\underbrace{S(t)p_{i}(t)}_{\text{arrival from the queue}} , 1\leq i\leq L
+\end{align*}
+\begin{align*}
+    \dot{N}(t) =\sum_{i=1}^L \dot{X}_i(t)= S(t)  - \frac{1}{d_0+d_1 B(t)} \sum_{i=1}^L X_i(t)(r_i(t)+q_i(t))
+\end{align*}
+\begin{align*}
+    \dot{B}(t) =\sum_{i=1}^L i\dot{X}_i(t)= S(t)\sum_{i=1}^{L} i p_i(t)  + \frac{1}{d_0+d_1 B(t)} \sum_{i=1}^{L-1} X_i(t)(1-r_i(t)-q_i(t))  - \frac{1}{d_0+d_1 B(t)} \sum_{i=1}^{L} i  X_i(t)(r_i(t)+q_i(t) )
+\end{align*}
+\begin{align*}
+    B(t) = \sum_{i=1}^L i X_i(t) \leq B, \; \sum_{i=1}^{L}p_i(t) = 1
+\end{align*}
+\begin{align*}
+    \lambda(t)&:\; \text{the arrival rate from the prefill phase to the decode phase.}\\
+    Q(t)& : \; \text{State variable, the number of requests in the queue at the begining of the decode phase.}\\
+    X_i(t)& : \; \text{State variable, the number of requests in the batch of length $i$.}\\
+    S(t)& : \; \text{Control variable, the number of requests sent for the construction of the batch.}\\
+    N(t)&=\sum_{i=1}^{L}X_i(t) : \; \text{Auxiliary variable, the number of requests in the batch}\\
+    B(t)&=\sum_{i=1}^{L}iX_i(t) : \; \text{Auxiliary variable, the number of tokens in the batch}\\
+    \text{Remark}&: \textcolor{blue}{\text{with the assumption }r_{L}(t)+q_L(t)\equiv 1, \text{ we can derive the last two ode from the state variable ode.} }
+\end{align*}
+Here the arrival to the decode phase at time $t$ is $\lambda(t)p_i(t)$, and there is no latency. This is because that the $\lambda(t)$ is the arrival rate to the decode phase not to the prefill phase. $S(t)$ is the number of requests sent for the construction of the batch, it also represents the scheduling policy. For example, it can be: at each time $\hat{t}$ that the execution of the batch is complete, it first construct the new batch using the requests in the old batch that both not completed the decoding and not sacrificed, and then add the prefilled request in the queue if there is still available memory for token budget. And we assume that the latency for the construction of the batch is ignorable.
+
+The sacrifice here means that the memory of the request is cleared from the GPU, and from both the simplicity of the model and the implementation in the real server, here we assume that the memory of the \textbf{prefill} part is not cleared, and the queue is at the begining of the decode phase, so we can ignore the prefill phase. This is the \textbf{PD-disaggregation}.
+
+\textcolor{red}{Main concern}: if we note the distribution in the arrival from the prefill is $p_i^{(org)}(t)$, which is i.d to the prefill length distribution. And consider the internal arrival, their is a \textbf{distribution shift} from $p_i^{(org)}(t)$ to $p_i(t)$. And as a result, the distribution $q_i(t)$ also shift from $q_i^{(org)}(t)$. In summary:
+\begin{align*}
+    \text{if there is no sacrifice: }& \text{prefill length distribution }\Rightarrow p_i^{(org)}(t) ,\; \; \text{prefill and  decode length distribution }\Rightarrow q_i^{(org)}(t)\\
+    \text{sacrifice: }& p_i(t) ,\; \; q_i(t)
+\end{align*}
+And this dirtribution shift is hard to compute.
+
+\subsection{Fluid dynamics in each node, swapping}
+The swapping means, consider the sacrifice mentioned above, the system do not just clear the memory on GPU, but also store the momery to the CPU, and can reload them back to GPU, so the fluid odes become:
+\begin{align*}
+    \dot{Q}(t)& = \lambda(t) - S_{q}(t)\\ 
+    \dot{Z}_i(t)& = \frac{X_i(t)r_i(t)}{d_0+d_1B(t) }-S_{Z,i}(t) \\ 
+    \dot{X}_i(t)& = \frac{X_{i-1}(t)(1-r_{i-1}(t)-q_{i-1}(t)) - X_i(t)}{d_0+d_1B(t) } +S_q(t)p_i(t)+S_{Z,i}(t)
+\end{align*}
+And for the ode of auxiliary variable:
+\begin{align*}
+    \dot{N}(t)& = S_q(t)+ \sum_{i=1}^{L}S_{Z,i}(t)-  \frac{1}{d_0+d_1B(t) } \sum_{i=1}^LX_i(t)(q_i(t)+r_i(t)) 
+\end{align*}
+\begin{align*} \dot{B}(t) = S_q(t)\sum_{i=1}^{L} i p_i(t) + \sum_{i=1}^L i S_{Z,i}(t) + \frac{1}{d_0+d_1 B(t)} \left[ \sum_{i=1}^{L-1}X_i(t)(1-q_i(t)-r_i(t)) - \sum_{i=1}^{L} i X_i(t)(q_i(t)+r_i(t)) \right] 
+\end{align*}
+Here $S_q(t)$ and $S_{Z,i}(t)$ are the control variables, and for most of the serving frameworks like vLLM/SGLang, the default settings are: when reaching the total memory bound, the server first swaps out the request in the batch that was added last (a Last-In, First-Out, LIFO, policy). When constructing the next batch, \textbf{the scheduler gives firm priority to resuming swapped-out requests to ensure fairness and prevent starvation.} Only after all possible swapped-out requests have been accommodated will the scheduler consider admitting new requests from the waiting queue, typically in a First-Come, First-Served (FCFS) order. This entire process operates under the strict constraint of the token budget $B$, and swapping in a high-priority request may even trigger the preemption of a lower-priority running request to make space.
+
+\textcolor{red}{Remark}: Here is no distribution shift mentioned in the memory clearing sacrifice case.
+
+\subsection{Control Logic of Swapping in Modern LLM Serving}\label{subsec::control_swap}
+
+The swapping mechanism in modern serving frameworks like vLLM and SGLang is not governed by a soft batch token budget, but is a reactive preemption strategy dictated by the hard physical memory limits of the GPU. The core of this mechanism is the \texttt{PagedAttention} architecture, which discretizes the entire KV cache memory into a pool of fixed-size physical blocks. The \textbf{total memory bound} is the total number of these blocks available on the GPU, a constant calculated at server startup by subtracting model weights and activation memory from the total usable GPU memory.
+
+\textbf{Swapping} is triggered when the system-wide demand for new memory blocks—originating from either a new request's prefill or an ongoing request's next decoding step—exceeds the number of available free blocks in the shared pool. This check occurs at the beginning of each scheduling iteration. To resolve this resource contention, the scheduler preempts one or more requests currently in the decode phase, typically following a Last-In, First-Out (LIFO) policy. The KV cache blocks of a preempted request are then copied from GPU VRAM to CPU RAM, and the corresponding GPU blocks are released back into the free pool.
+
+The process of composing the next batch follows a strict priority hierarchy that ensures fairness and prevents starvation. First, all requests currently in a \textbf{RUNNING} state are guaranteed a spot in the next batch. Second, the scheduler attempts to resume requests from the \textbf{SWAPPED} queue, loading their KV cache from CPU back to GPU, provided enough free blocks are available. Only after all possible swapped requests have been accommodated does the scheduler consider admitting new requests from the \textbf{WAITING} queue. This priority scheme is the discrete, event-driven implementation of the control policies, such as $S_q(t)$ and $S_{Z,i}(t)$, in the fluid dynamics model.
