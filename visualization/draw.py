@@ -7,8 +7,8 @@ Usage: python draw.py --csv /path/to/batch_snapshots.csv
 import argparse
 import os
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 
 def plot_queue_dynamics(csv_path: str, arrival_end: float = None, 
@@ -123,7 +123,7 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     
     # Plot batch tokens
     ax3.plot(df['time'], df['batch_tokens'], 
-            label='Batch Tokens', color='tab:blue', linewidth=2, marker='o', markersize=3)
+            label='Batch Tokens (after execution)', color='tab:blue', linewidth=2, marker='o', markersize=3)
     
     # Plot GPU memory used
     ax3.plot(df['time'], df['gpu_memory_used'], 
@@ -175,8 +175,286 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     # plt.savefig(pdf_path, bbox_inches='tight')
     # print(f"PDF saved to: {pdf_path}")
     
-    # Show plot (optional, can be commented out for headless environments)
-    plt.show()
+    # Close the figure to free memory (no display)
+    plt.close(fig)
+    
+    # 如果存在sacrifice数据，绘制sacrifice动态图
+    plot_sacrifice_dynamics(exp_dir, request_file=None)
+
+
+def plot_sacrifice_dynamics(exp_dir: str, request_file: str = None):
+    """
+    绘制sacrifice动态图并保存分布数据
+    
+    Args:
+        exp_dir: 实验目录路径
+        request_file: 原始请求文件路径（用于获取max_decode_length）
+    """
+    # 检查sacrifice_snapshot.csv是否存在
+    sacrifice_csv = os.path.join(exp_dir, 'sacrifice_snapshot.csv')
+    if not os.path.exists(sacrifice_csv):
+        return  # 没有sacrifice事件，跳过
+    
+    # 读取sacrifice数据
+    df_sacrifice = pd.read_csv(sacrifice_csv)
+    if df_sacrifice.empty:
+        return
+    
+    print(f"Processing sacrifice data: {len(df_sacrifice)} events")
+    
+    # 检查是否有新的上下文列
+    has_context = 'running_count_same_position' in df_sacrifice.columns and \
+                  'total_running_count' in df_sacrifice.columns
+    
+    # 获取max_decode_position用于绘图
+    # 实际被sacrifice的最大位置
+    actual_max_position = int(df_sacrifice['current_decode_position'].max())
+    
+    # 理论最大decode长度（如果有请求文件）
+    theoretical_max_length = None
+    if request_file and os.path.exists(request_file):
+        df_requests = pd.read_csv(request_file)
+        # decode_length是长度，位置是0到length-1
+        theoretical_max_length = int(df_requests['decode_length'].max()) - 1
+    
+    # 用于绘图的最大位置：取实际最大位置，但不超过理论最大值
+    if theoretical_max_length is not None:
+        max_decode_position = min(actual_max_position, theoretical_max_length)
+    else:
+        max_decode_position = actual_max_position
+    
+    print(f"Actual max sacrifice position: {actual_max_position}")
+    if theoretical_max_length is not None:
+        print(f"Theoretical max position (decode_length-1): {theoretical_max_length}")
+    print(f"Using max position for plotting: {max_decode_position}")
+    
+    # 创建子图：如果有上下文数据则3x1，否则2x1
+    if has_context:
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 16))
+    else:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
+    
+    # ========== 第一个子图：双纵轴 ==========
+    # 获取所有唯一时间点并排序
+    unique_times = sorted(df_sacrifice['time'].unique())
+    
+    # 统计每个时间点的sacrifice数量和浪费tokens
+    time_stats = []
+    for t in unique_times:
+        df_t = df_sacrifice[df_sacrifice['time'] == t]
+        time_stats.append({
+            'time': t,
+            'count': len(df_t),
+            'memory_freed': df_t['memory_freed'].sum()
+        })
+    df_stats = pd.DataFrame(time_stats)
+    
+    # 左纵轴：请求数量（柱状图）
+    ax1_left = ax1
+    bar_width = np.diff(unique_times).mean() * 0.8 if len(unique_times) > 1 else 1.0
+    ax1_left.bar(df_stats['time'], df_stats['count'], 
+                 width=bar_width, color='blue', alpha=0.5, 
+                 label='Sacrificed Requests per Time')
+    ax1_left.set_xlabel('Time', fontsize=12)
+    ax1_left.set_ylabel('Number of Sacrificed Requests', color='blue', fontsize=12)
+    ax1_left.tick_params(axis='y', labelcolor='blue')
+    
+    # 右纵轴：累计浪费的tokens（线图）
+    ax1_right = ax1.twinx()
+    cumulative_wasted = df_stats['memory_freed'].cumsum()
+    ax1_right.plot(df_stats['time'], cumulative_wasted, 
+                   color='red', linewidth=2, marker='o', markersize=4,
+                   label='Cumulative Wasted Tokens')
+    ax1_right.set_ylabel('Cumulative Wasted Tokens', color='red', fontsize=12)
+    ax1_right.tick_params(axis='y', labelcolor='red')
+    
+    # 添加图例
+    lines1, labels1 = ax1_left.get_legend_handles_labels()
+    lines2, labels2 = ax1_right.get_legend_handles_labels()
+    ax1_left.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+    ax1.set_title('Sacrifice Events and Wasted Tokens Over Time', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    
+    # ========== 第二个子图：概率分布 ==========
+    # 创建概率矩阵（时间 x 位置）
+    prob_matrix_list = []
+    
+    # 为每个sacrifice事件计算到该时间点的累积分布
+    # 这样如果有899个事件，就会有899行
+    for idx in range(len(df_sacrifice)):
+        current_time = df_sacrifice.iloc[idx]['time']
+        
+        # 获取到当前时间为止的所有sacrifice事件（包括当前）
+        df_until_now = df_sacrifice.iloc[:idx+1]
+        
+        # 统计各decode_position的数量
+        position_counts = df_until_now['current_decode_position'].value_counts()
+        total_count = len(df_until_now)
+        
+        # 创建这个时间点的概率行
+        row_data = {'time': current_time}
+        for pos in range(max_decode_position + 1):
+            prob = position_counts.get(pos, 0) / total_count if total_count > 0 else 0
+            row_data[f'position_{pos}'] = prob
+        
+        prob_matrix_list.append(row_data)
+    
+    # 转换为DataFrame
+    prob_matrix = pd.DataFrame(prob_matrix_list)
+    
+    if not prob_matrix.empty:
+        # 绘制所有decode positions的概率分布线条
+        # 使用matplotlib的默认颜色循环
+        # 获取默认的颜色循环
+        prop_cycle = plt.rcParams['axes.prop_cycle']
+        colors = prop_cycle.by_key()['color']
+        
+        # 绘制所有位置的线条
+        for pos in range(max_decode_position + 1):
+            col_name = f'position_{pos}'
+            if col_name in prob_matrix.columns:
+                # 获取这个位置的概率序列
+                probs = prob_matrix[col_name].astype(float)
+                times = prob_matrix['time'].astype(float)
+                
+                # 绘制所有线条，即使概率很小
+                # 使用颜色循环
+                color = colors[pos % len(colors)]
+                ax2.plot(times, probs, 
+                        color=color, linewidth=0.8, alpha=0.8,
+                        label=f'Pos {pos}')
+        
+        ax2.set_xlabel('Time', fontsize=12)
+        ax2.set_ylabel('Probability', fontsize=12)
+        ax2.set_ylim([0, 1])
+        ax2.set_title('Distribution of Sacrifice Positions Over Time (Cumulative)', 
+                     fontsize=14, fontweight='bold')
+        
+        # 显示图例（可能会很多，使用小字体和多列）
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
+                  ncol=3, fontsize=6)
+        
+        ax2.grid(True, alpha=0.3, linestyle='--')
+    
+    # ========== 第三个子图：条件概率时间序列（如果有上下文数据）==========
+    if has_context:
+        # 计算每个时间点每个位置的条件概率
+        # P(sacrifice | position, time) = 对该时间该位置的所有事件，先算每行概率再平均
+        
+        # 获取所有唯一时间点
+        unique_times = sorted(df_sacrifice['time'].unique())
+        
+        # 创建时间-位置-概率映射
+        time_position_prob = {}
+        
+        for t in unique_times:
+            time_events = df_sacrifice[df_sacrifice['time'] == t]
+            time_position_prob[t] = {}
+            
+            # 对每个decode_position计算条件概率
+            for pos in time_events['current_decode_position'].unique():
+                pos_events = time_events[time_events['current_decode_position'] == pos]
+                
+                # 计算每行的条件概率（1/running_count_same_position）
+                # 这表示：在该位置有N个请求时，这个请求被选中sacrifice的概率
+                row_probs = 1.0 / pos_events['running_count_same_position']
+                
+                # 求平均作为该时间该位置的条件概率
+                avg_prob = row_probs.mean()
+                
+                time_position_prob[t][pos] = avg_prob
+        
+        # 准备绘图数据
+        # 为每个出现过的decode_position创建一条时间序列线
+        all_positions = sorted(set(
+            pos for time_dict in time_position_prob.values() 
+            for pos in time_dict.keys()
+        ))
+        
+        # 使用matplotlib的默认颜色循环
+        prop_cycle = plt.rcParams['axes.prop_cycle']
+        colors = prop_cycle.by_key()['color']
+        
+        # 绘制每个位置的概率时间序列
+        for i, pos in enumerate(all_positions):
+            times = []
+            probs = []
+            
+            for t in unique_times:
+                if pos in time_position_prob[t]:
+                    times.append(t)
+                    probs.append(time_position_prob[t][pos])
+            
+            if times:  # 只绘制有数据的位置
+                color = colors[i % len(colors)]
+                ax3.plot(times, probs, 
+                        color=color, linewidth=1.5, alpha=0.8,
+                        marker='o', markersize=3,
+                        label=f'Position {pos}')
+        
+        ax3.set_xlabel('Time', fontsize=12)
+        ax3.set_ylabel('Conditional Probability P(sacrifice | position, time)', fontsize=12)
+        ax3.set_ylim([0, 1])
+        ax3.set_title('Conditional Probability of Sacrifice Over Time', 
+                     fontsize=14, fontweight='bold')
+        
+        # 添加图例（可能会很多，使用小字体和多列）
+        if len(all_positions) > 10:
+            ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
+                      ncol=2, fontsize=6)
+        else:
+            ax3.legend(loc='upper right', fontsize=8)
+        
+        ax3.grid(True, alpha=0.3, linestyle='--')
+    
+    # 调整布局
+    plt.tight_layout()
+    
+    # 保存图片
+    output_path = os.path.join(exp_dir, 'sacrifice_dynamics.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Sacrifice dynamics saved to: {output_path}")
+    plt.close(fig)
+    
+    # 保存分布数据到CSV（宽格式矩阵）
+    if not prob_matrix.empty:
+        dist_csv_path = os.path.join(exp_dir, 'sacrifice_distribution.csv')
+        prob_matrix.to_csv(dist_csv_path, index=False)
+        print(f"Sacrifice distribution saved to: {dist_csv_path}")
+    
+    # 如果有上下文数据，保存条件概率时间序列
+    if has_context and time_position_prob:
+        # 保存条件概率时间序列（宽格式：时间 x 位置）
+        cond_prob_csv_path = os.path.join(exp_dir, 'sacrifice_conditional_prob_timeline.csv')
+        
+        # 获取所有位置
+        all_positions_for_csv = sorted(set(
+            pos for time_dict in time_position_prob.values() 
+            for pos in time_dict.keys()
+        ))
+        
+        # 创建宽格式数据
+        cond_prob_rows = []
+        for t in sorted(time_position_prob.keys()):
+            row = {'time': t}
+            for pos in all_positions_for_csv:
+                col_name = f'position_{pos}'
+                # 如果该时间该位置有概率，使用它；否则为0
+                row[col_name] = time_position_prob[t].get(pos, 0.0)
+            cond_prob_rows.append(row)
+        
+        # 写入CSV
+        if cond_prob_rows:
+            fieldnames = ['time'] + [f'position_{pos}' for pos in all_positions_for_csv]
+            
+            import csv
+            with open(cond_prob_csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(cond_prob_rows)
+            
+            print(f"Conditional probability timeline saved to: {cond_prob_csv_path}")
 
 
 def main():

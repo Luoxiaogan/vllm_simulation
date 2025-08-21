@@ -242,6 +242,56 @@ class EventLogger:
         
         print(f"内存事件已保存到: {filepath}")
     
+    def save_sacrifice_snapshots(self, requests: List[Request], 
+                                filename: str = "sacrifice_snapshot.csv"):
+        """
+        保存sacrifice事件快照
+        
+        Args:
+            requests: 完成的请求列表
+            filename: 输出文件名
+        """
+        filepath = self.output_dir / filename
+        
+        # 收集所有sacrifice事件
+        all_events = []
+        for req in requests:
+            for event in req.sacrifice_events:
+                all_events.append({
+                    'time': event.time,
+                    'req_id': req.req_id,
+                    'decode_position': event.decode_position,
+                    'memory_freed': event.memory_freed,
+                    'running_count_same_position': event.running_count_same_position,
+                    'total_running_count': event.total_running_count
+                })
+        
+        # 如果没有sacrifice事件，不创建文件
+        if not all_events:
+            return
+        
+        # 按时间排序
+        all_events.sort(key=lambda x: x['time'])
+        
+        # 写入CSV
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # 保存所有有用的字段，包括上下文信息
+            writer.writerow(['time', 'req_id', 'current_decode_position', 'memory_freed', 
+                           'running_count_same_position', 'total_running_count'])
+            
+            for event in all_events:
+                writer.writerow([
+                    f"{event['time']:.4f}",
+                    event['req_id'],
+                    event['decode_position'],
+                    event['memory_freed'],
+                    event['running_count_same_position'],
+                    event['total_running_count']
+                ])
+        
+        print(f"Sacrifice快照已保存到: {filepath}")
+    
     def save_all(self, simulation_results: Dict[str, Any]):
         """
         保存所有仿真结果
@@ -256,6 +306,9 @@ class EventLogger:
         self.save_queue_timeline(simulation_results['snapshots'])
         self.save_memory_events(simulation_results['events'], 
                               simulation_results['snapshots'])
+        
+        # 添加：保存sacrifice快照
+        self.save_sacrifice_snapshots(simulation_results['requests'])
         
         # 保存汇总统计
         self.save_summary(simulation_results)

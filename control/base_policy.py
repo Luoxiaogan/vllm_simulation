@@ -62,10 +62,10 @@ class ControlPolicy(ABC):
         pass
     
     @abstractmethod
-    def construct_next_batch(self, state: SystemState, 
-                           current_time: float) -> None:
+    def perform_scheduling_cycle(self, state: SystemState, 
+                               current_time: float) -> None:
         """
-        构建下一个批次
+        执行完整的调度周期，对应vLLM的_schedule_default方法
         
         Args:
             state: 系统状态

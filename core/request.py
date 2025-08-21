@@ -21,6 +21,8 @@ class SacrificeEvent:
     time: float
     decode_position: int
     memory_freed: int
+    running_count_same_position: int = 0  # 同decode位置的running请求数
+    total_running_count: int = 0  # running队列总请求数
 
 
 @dataclass

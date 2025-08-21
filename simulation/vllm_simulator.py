@@ -139,7 +139,7 @@ class VLLMSimulator(BaseSimulator):
         
         # 1. 如果没有运行中的批次，立即构建新批次
         if not self.state.running:
-            self.control_policy.construct_next_batch(self.state, self.time)
+            self.control_policy.perform_scheduling_cycle(self.state, self.time)
             if not self.state.running:
                 # 仍然没有批次，可能是等待队列为空或内存不足
                 return False
@@ -171,7 +171,7 @@ class VLLMSimulator(BaseSimulator):
         completed = self.extract_completed_requests()
         
         # 8. 构建下一批次（内存检查已移至构建阶段）
-        self.control_policy.construct_next_batch(self.state, self.time)
+        self.control_policy.perform_scheduling_cycle(self.state, self.time)
         
         return True
     
