@@ -9,7 +9,7 @@ system:
   B: 10000
   
   # 批次执行时间模型：duration = d_0 + d_1 * batch_tokens
-  d_0: 0.03        # 基础执行时间
+  d_0: 0.003        # 基础执行时间
   d_1: 0.00032       # 每token边际时间
 
 control:

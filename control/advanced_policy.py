@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.request import Request, SwapEvent, SacrificeEvent
+from core.request import Request, SwapEvent, SacrificeEvent, RequestStatus
 from core.system_state import SystemState
 from .base_policy import ControlPolicy
 
@@ -93,36 +93,160 @@ class AdvancedPolicy(ControlPolicy):
         
         return victims
     
+    def _select_victims_by_arrival_time(self, running: List[Request], 
+                                       memory_needed: int) -> List[Request]:
+        """
+        基于arrival_time选择victims（用于FCFS+sacrifice场景）
+        选择arrival_time最晚的请求作为victims
+        
+        Args:
+            running: 运行中的请求列表
+            memory_needed: 需要释放的内存量
+            
+        Returns:
+            可以被抢占的victims列表
+        """
+        if not running:
+            return []
+        
+        # 按arrival_time降序排序（最晚到达的在前）
+        sorted_running = sorted(running, 
+                              key=lambda r: r.arrival_time, 
+                              reverse=True)
+        
+        victims = []
+        freed_memory = 0
+        
+        for req in sorted_running:
+            if freed_memory >= memory_needed:
+                break
+            victims.append(req)
+            freed_memory += req.current_memory_usage
+        
+        return victims
+    
     def construct_next_batch(self, state: SystemState, 
                            current_time: float) -> None:
         """
-        构建下一个批次
-        根据策略选择不同的准入控制逻辑
+        构建下一个批次 - 模拟vLLM的_schedule_default流程
+        分离调度和抢占阶段，避免抢占风暴
         """
-        # Phase 1: 处理内存增长（预防性检查）
-        self._handle_memory_growth(state, current_time)
-        
-        # Phase 2: 准入控制（根据策略选择）
-        if self.preemption_strategy == "aggressive":
-            self._admission_control_aggressive(state, current_time)
-        else:
+        if self.preemption_strategy == "conservative":
+            # 保守策略：保持原有逻辑（不抢占）
             self._admission_control_conservative(state, current_time)
+        else:
+            # 激进策略：模拟vLLM的三阶段调度
+            # Phase 1: 调度waiting到running（类似_schedule_prefills，不抢占）
+            self._schedule_waiting_phase(state, current_time)
+            
+            # Phase 2: 处理running的内存增长（类似_schedule_running，可能抢占）
+            preempted = self._handle_memory_growth_with_preemption(state, current_time)
+            
+            # Phase 3: 批量将被抢占的请求加入waiting队首
+            if preempted:
+                # 反向插入保持原有顺序
+                for req in reversed(preempted):
+                    req.status = RequestStatus.WAITING
+                    state.waiting.insert(0, req)
     
-    def _handle_memory_growth(self, state: SystemState, current_time: float):
+    def _schedule_waiting_phase(self, state: SystemState, current_time: float):
         """
-        处理内存增长：如果仅执行现有RUNNING请求就会超内存，则先抢占
+        调度阶段：类似vLLM的_schedule_prefills
+        只尝试将能放下的请求加入running，不触发抢占
         """
-        if state.gpu_memory_used + len(state.running) > state.M_total:
+        # 1. 处理SWAPPED队列（如果是swap模式）
+        if self.preemption_mode == 'swap' and state.swapped:
+            for req in list(state.swapped):
+                if self._can_admit_directly(req, state):
+                    state.swapped.remove(req)
+                    state.admit_to_batch(req, current_time)
+                    state.total_swapped_in += 1
+                    if req.swap_events:
+                        req.swap_events[-1].swap_in_time = current_time
+        
+        # 2. 处理WAITING队列
+        for req in list(state.waiting):
+            if self._can_admit_directly(req, state):
+                state.waiting.remove(req)
+                state.admit_to_batch(req, current_time)
+    
+    def _can_admit_directly(self, request: Request, state: SystemState) -> bool:
+        """
+        检查是否可以直接接纳请求（不触发抢占）
+        """
+        # 检查内存约束（包括下一个token生成的空间）
+        required_memory = request.memory_requirement + 1
+        if required_memory > state.available_memory:
+            return False
+        
+        # 检查批次token预算
+        current_batch_tokens = sum(r.current_memory_usage for r in state.running)
+        if current_batch_tokens + request.memory_requirement > state.B:
+            return False
+        
+        return True
+    
+    def _handle_memory_growth_with_preemption(self, state: SystemState, 
+                                             current_time: float) -> List[Request]:
+        """
+        内存增长处理阶段：类似vLLM的_schedule_running
+        检查running请求的内存增长，必要时触发抢占
+        返回被抢占的请求列表（不立即加入waiting）
+        """
+        preempted = []
+        
+        # 检查是否需要抢占（模拟下一个token生成的内存需求）
+        while state.running and state.gpu_memory_used + len(state.running) > state.M_total:
             memory_needed = (state.gpu_memory_used + len(state.running)) - state.M_total
             
             if self.preemption_mode == 'swap':
+                # swap模式：使用LIFO选择victims
                 victims = self.select_swap_victims(state.running, memory_needed)
+                if not victims:
+                    break
+                    
                 for victim in victims:
-                    self._do_swap_out(victim, state, current_time)
-            else:  # sacrifice
-                victims = self.select_sacrifice_victims(state.running, memory_needed)
+                    # 执行swap out
+                    swap_event = SwapEvent(
+                        swap_out_time=current_time,
+                        decode_position=victim.current_decode_position,
+                        memory_size=victim.current_memory_usage
+                    )
+                    victim.swap_events.append(swap_event)
+                    state.remove_from_batch(victim, current_time)
+                    victim.status = RequestStatus.SWAPPED
+                    state.swapped.append(victim)
+                    state.total_swapped_out += 1
+                    
+            else:  # sacrifice模式
+                # 在FCFS场景下，基于arrival_time选择victims
+                # 选择最晚到达的请求作为victims（保护早到达的请求）
+                victims = self._select_victims_by_arrival_time(state.running, memory_needed)
+                    
+                if not victims:
+                    break
+                    
                 for victim in victims:
-                    self._do_sacrifice(victim, state, current_time)
+                    # 记录sacrifice事件
+                    sacrifice_event = SacrificeEvent(
+                        time=current_time,
+                        decode_position=victim.current_decode_position,
+                        memory_freed=victim.current_memory_usage
+                    )
+                    victim.sacrifice_events.append(sacrifice_event)
+                    
+                    # 从running移除
+                    state.remove_from_batch(victim, current_time)
+                    
+                    # 重置进度
+                    victim.current_decode_position = 0
+                    
+                    # 添加到待返回列表（不立即加入waiting！）
+                    preempted.append(victim)
+                    state.total_sacrifices += 1
+                    state.batch_sacrifices += 1
+        
+        return preempted
     
     def _admission_control_conservative(self, state: SystemState, current_time: float):
         """
@@ -143,31 +267,6 @@ class AdvancedPolicy(ControlPolicy):
         # 完全依赖请求自然完成来释放内存
         # 这样可以避免系统震荡，保持稳定性
     
-    def _admission_control_aggressive(self, state: SystemState, current_time: float):
-        """
-        激进准入控制：vLLM风格，严格优先级
-        """
-        # 1. SWAPPED队列（最高优先级，仅swap模式）
-        if self.preemption_mode == 'swap':
-            for req in list(state.swapped):
-                if not self._try_admit_with_preemption(req, state, current_time, from_swapped=True):
-                    break  # 即使抢占也无法接纳
-        
-        # 2. WAITING队列
-        # 在sacrifice模式下，队首的是被牺牲的请求，有最高优先级
-        for req in list(state.waiting):
-            # 判断是否允许为WAITING请求抢占
-            allow_preempt = (self.allow_waiting_preempt or 
-                           self.preemption_mode == 'sacrifice')  # sacrifice模式总是允许
-            
-            if allow_preempt:
-                if not self._try_admit_with_preemption(req, state, current_time, from_swapped=False):
-                    break
-            else:
-                # 只接纳能直接放下的
-                if not self._try_admit_direct(req, state, current_time):
-                    # 不能接纳，但继续尝试后面更小的请求
-                    continue
     
     def _try_admit_without_preemption(self, queue: List[Request], 
                                      state: SystemState, 
@@ -203,92 +302,7 @@ class AdvancedPolicy(ControlPolicy):
                 state.waiting.remove(req)
                 state.admit_to_batch(req, current_time)
     
-    def _try_admit_direct(self, request: Request, 
-                         state: SystemState, 
-                         current_time: float) -> bool:
-        """
-        尝试直接接纳请求（不抢占）
-        """
-        required_memory = request.memory_requirement + 1
-        if required_memory <= state.available_memory:
-            state.waiting.remove(request)
-            state.admit_to_batch(request, current_time)
-            return True
-        return False
     
-    def _try_admit_with_preemption(self, request: Request,
-                                  state: SystemState,
-                                  current_time: float,
-                                  from_swapped: bool = False) -> bool:
-        """
-        尝试接纳请求，必要时进行抢占
-        """
-        # 1. 检查是否可以直接接纳
-        required_memory = request.memory_requirement + 1
-        if required_memory <= state.available_memory:
-            # 可以直接接纳
-            if from_swapped:
-                state.swapped.remove(request)
-                state.admit_to_batch(request, current_time)
-                state.total_swapped_in += 1
-                if request.swap_events:
-                    request.swap_events[-1].swap_in_time = current_time
-            else:
-                state.waiting.remove(request)
-                state.admit_to_batch(request, current_time)
-            return True
-        
-        # 2. 需要抢占
-        memory_needed = required_memory - state.available_memory
-        
-        # 3. 选择victims
-        if self.preemption_mode == 'swap':
-            victims = self.select_swap_victims(state.running, memory_needed)
-        else:
-            victims = self.select_sacrifice_victims(state.running, memory_needed)
-        
-        # 检查是否能释放足够内存
-        freed_memory = sum(v.current_memory_usage for v in victims)
-        if freed_memory < memory_needed:
-            return False  # 即使抢占所有可能的请求也不够
-        
-        # 4. 执行抢占
-        for victim in victims:
-            if self.preemption_mode == 'swap':
-                self._do_swap_out(victim, state, current_time)
-            else:
-                self._do_sacrifice(victim, state, current_time)
-        
-        # 5. 接纳请求
-        if from_swapped:
-            state.swapped.remove(request)
-            state.admit_to_batch(request, current_time)
-            state.total_swapped_in += 1
-            if request.swap_events:
-                request.swap_events[-1].swap_in_time = current_time
-        else:
-            state.waiting.remove(request)
-            state.admit_to_batch(request, current_time)
-        
-        return True
-    
-    def _do_swap_out(self, request: Request, state: SystemState, current_time: float):
-        """
-        执行swap out操作
-        """
-        swap_event = SwapEvent(
-            swap_out_time=current_time,
-            decode_position=request.current_decode_position,
-            memory_size=request.current_memory_usage
-        )
-        request.swap_events.append(swap_event)
-        state.swap_out(request, current_time)
-    
-    def _do_sacrifice(self, request: Request, state: SystemState, current_time: float):
-        """
-        执行sacrifice操作
-        """
-        state.sacrifice_request(request, current_time)
     
     def __repr__(self) -> str:
         return f"AdvancedPolicy({self.preemption_mode}+{self.preemption_strategy})"

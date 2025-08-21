@@ -86,86 +86,74 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
                     bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.3))
     
     # ========== Top subplot: Queue dynamics ==========
-    # Primary y-axis: Queue counts
+    # Use single y-axis for all request counts
+    ax1.set_xlabel('Time', fontsize=12)
+    ax1.set_ylabel('Number of Requests', fontsize=12)
+    
+    # Plot waiting and running counts
     ax1.plot(df['time'], df['waiting_count'], 
             label='Waiting', color='blue', linewidth=2, marker='o', markersize=3)
     ax1.plot(df['time'], df['running_count'], 
             label='Running', color='green', linewidth=2, marker='s', markersize=3)
     
-    # Secondary y-axis: Sacrifice counts (if available)
+    # Plot sacrifice counts as bars (if available)
     if has_sacrifice:
-        ax2 = ax1.twinx()
-        ax2.bar(df['time'], df['batch_sacrifice_count'], 
+        # Use bar chart for per-batch sacrifice count
+        ax1.bar(df['time'], df['batch_sacrifice_count'], 
                 color='red', alpha=0.5, width=df['time'].diff().median() * 0.8,
-                label='Batch Sacrifices')
-        ax2.set_ylabel('Sacrifices per Batch', fontsize=11, color='red')
-        ax2.tick_params(axis='y', labelcolor='red')
-        ax2.set_ylim(bottom=0)
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
-    else:
-        ax1.legend(loc='upper left', fontsize=10)
-    
-    # Set labels and title for top subplot
-    ax1.set_xlabel('Time', fontsize=12)
-    ax1.set_ylabel('Number of Requests', fontsize=12)
-    ax1.set_title('Queue Dynamics and Sacrifice Events', fontsize=14, fontweight='bold')
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.set_ylim(bottom=0)
+                label='Sacrifices per Batch')
     
     # Add vertical line for arrival end time if provided
     if arrival_end is not None:
         ax1.axvline(x=arrival_end, color='black', linestyle='--', linewidth=2, 
                    alpha=0.7, label=f'Arrival End ({arrival_end:.1f})')
-        # Update legend to include the vertical line
-        if has_sacrifice:
-            lines1, labels1 = ax1.get_legend_handles_labels()
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
-        else:
-            ax1.legend(loc='upper left', fontsize=10)
+    
+    # Set legend
+    ax1.legend(loc='upper left', fontsize=10)
+    
+    # Set title and grid
+    ax1.set_title('Queue Dynamics and Sacrifice Events', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.set_ylim(bottom=0)
     
     # ========== Bottom subplot: Memory and token usage ==========
-    # Primary y-axis: Batch tokens
-    color = 'tab:blue'
+    # Use single y-axis for both batch tokens and GPU memory (both are token counts)
     ax3.set_xlabel('Time', fontsize=12)
-    ax3.set_ylabel('Batch Tokens', fontsize=12, color=color)
+    ax3.set_ylabel('Number of Tokens', fontsize=12)
+    
+    # Plot batch tokens
     ax3.plot(df['time'], df['batch_tokens'], 
-            label='Batch Tokens', color=color, linewidth=2, marker='o', markersize=3)
-    ax3.tick_params(axis='y', labelcolor=color)
-    ax3.set_ylim(bottom=0)
+            label='Batch Tokens', color='tab:blue', linewidth=2, marker='o', markersize=3)
+    
+    # Plot GPU memory used
+    ax3.plot(df['time'], df['gpu_memory_used'], 
+            label='GPU Memory Used', color='tab:orange', linewidth=2, marker='s', markersize=3)
     
     # Add horizontal line for B_total if provided
     if B_total is not None:
-        ax3.axhline(y=B_total, color=color, linestyle=':', linewidth=2, 
-                   alpha=0.7, label=f'B_total ({B_total})')
-    
-    # Secondary y-axis: GPU memory usage
-    ax4 = ax3.twinx()
-    color = 'tab:orange'
-    ax4.set_ylabel('GPU Memory Used', fontsize=12, color=color)
-    ax4.plot(df['time'], df['gpu_memory_used'], 
-            label='GPU Memory Used', color=color, linewidth=2, marker='s', markersize=3)
-    ax4.tick_params(axis='y', labelcolor=color)
-    ax4.set_ylim(bottom=0)
+        ax3.axhline(y=B_total, color='tab:blue', linestyle=':', linewidth=2, 
+                   alpha=0.7, label=f'B_total ({B_total:,})')
     
     # Add horizontal line for M_total if provided
     if M_total is not None:
-        ax4.axhline(y=M_total, color=color, linestyle=':', linewidth=2, 
-                   alpha=0.7, label=f'M_total ({M_total})')
+        ax3.axhline(y=M_total, color='tab:orange', linestyle=':', linewidth=2, 
+                   alpha=0.7, label=f'M_total ({M_total:,})')
     
     # Add vertical line for arrival end time if provided
     if arrival_end is not None:
         ax3.axvline(x=arrival_end, color='black', linestyle='--', linewidth=2, 
                    alpha=0.7, label=f'Arrival End')
     
-    # Combine legends for bottom subplot
-    lines3, labels3 = ax3.get_legend_handles_labels()
-    lines4, labels4 = ax4.get_legend_handles_labels()
-    ax3.legend(lines3 + lines4, labels3 + labels4, loc='upper left', fontsize=10)
+    # Add legend
+    ax3.legend(loc='upper left', fontsize=10)
+    
+    # Set y-axis limits
+    ax3.set_ylim(bottom=0)
+    
+    # Optionally set upper limit based on max of M_total and data
+    if M_total is not None:
+        max_val = max(M_total * 1.1, df['gpu_memory_used'].max() * 1.1)
+        ax3.set_ylim(top=max_val)
     
     # Set title for bottom subplot
     ax3.set_title('Memory and Token Usage', fontsize=14, fontweight='bold')
@@ -182,10 +170,10 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Figure saved to: {output_path}")
     
-    # Also save as PDF for publication quality
-    pdf_path = os.path.join(exp_dir, 'queue_dynamics.pdf')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    print(f"PDF saved to: {pdf_path}")
+    # # Also save as PDF for publication quality
+    # pdf_path = os.path.join(exp_dir, 'queue_dynamics.pdf')
+    # plt.savefig(pdf_path, bbox_inches='tight')
+    # print(f"PDF saved to: {pdf_path}")
     
     # Show plot (optional, can be commented out for headless environments)
     plt.show()
