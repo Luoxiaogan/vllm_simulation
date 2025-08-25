@@ -19,8 +19,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.request import Request
 from core.system_state import SystemState
+from core.constants import RequestStatus
+from core.state_manager import (
+    save_state_to_csv, 
+    load_initial_state_from_csv, 
+    parse_single_type
+)
 from control.advanced_policy import AdvancedPolicy
 from simulation.vllm_simulator import VLLMSimulator
+from simulation.vllm_simulator_with_state import VLLMSimulatorWithState
 from simulation.event_logger import EventLogger
 from visualization.draw import plot_queue_dynamics
 
@@ -120,7 +127,47 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
     print("加载配置...")
     config = load_config(config_path)
     
-    # 检查是否需要生成数据
+    # 初始化变量
+    initial_time = 0.0  # 系统初始时间
+    initial_requests = []  # 从状态文件加载的请求
+    generated_requests = []  # 新生成的请求
+    all_requests = []  # 所有请求
+    
+    # 1. 处理初始状态加载（如果启用）
+    if config.get('initial_state', {}).get('enabled', False):
+        print("\n=== 加载初始状态 ===")
+        state_file = config['initial_state']['state_file']
+        
+        if not state_file:
+            print("错误：未指定状态文件路径")
+            return
+        
+        # 获取request type（如果需要统一类型）
+        request_type = None
+        if 'generation' in config and config['generation'].get('types'):
+            types_str = config['generation']['types']
+            request_type = parse_single_type(types_str)
+            if request_type:
+                print(f"使用统一类型: prefill={request_type['prefill_length']}, decode={request_type['decode_length']}")
+        
+        # 加载状态
+        try:
+            initial_requests, initial_time = load_initial_state_from_csv(state_file, request_type)
+            print(f"成功加载 {len(initial_requests)} 个请求")
+            print(f"系统初始时间: {initial_time:.2f}")
+            
+            # 统计各状态的请求数
+            waiting_count = sum(1 for r in initial_requests if r.status == RequestStatus.WAITING)
+            running_count = sum(1 for r in initial_requests if r.status == RequestStatus.RUNNING)
+            swapped_count = sum(1 for r in initial_requests if r.status == RequestStatus.SWAPPED)
+            
+            print(f"状态分布: WAITING={waiting_count}, RUNNING={running_count}, SWAPPED={swapped_count}")
+            
+        except Exception as e:
+            print(f"加载初始状态失败: {e}")
+            return
+    
+    # 2. 检查是否需要生成新数据
     if 'generation' in config and config['generation'].get('enabled', False):
         print("\n=== 数据生成阶段 ===")
         gen_config = config['generation']
@@ -148,9 +195,23 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
             if result.stdout:
                 print("生成输出:", result.stdout)
             
-            # 更新配置中的请求文件路径
-            config['data']['request_file'] = gen_config['output']
-            print(f"已更新请求文件路径为: {gen_config['output']}")
+            # 如果是继续生成模式，加载生成的请求并调整时间
+            if initial_time > 0 or initial_requests:
+                # 加载刚生成的请求
+                generated_requests = load_requests(gen_config['output'], config['data'].get('L_filter'))
+                
+                # 调整时间偏移
+                if initial_time > 0:
+                    print(f"\n调整新生成请求的到达时间，偏移量: {initial_time:.2f}")
+                    for req in generated_requests:
+                        req.arrival_time += initial_time
+                    
+                    if generated_requests:
+                        print(f"新请求时间范围: {generated_requests[0].arrival_time:.2f} - {generated_requests[-1].arrival_time:.2f}")
+            else:
+                # 正常模式，更新配置中的请求文件路径
+                config['data']['request_file'] = gen_config['output']
+                print(f"已更新请求文件路径为: {gen_config['output']}")
             
         except subprocess.CalledProcessError as e:
             print(f"\n数据生成失败!")
@@ -174,19 +235,35 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
     
     print(f"\n实验输出目录: {output_dir}")
     
-    # 确定请求文件路径
-    if request_file:
-        csv_path = request_file
+    # 3. 合并所有请求
+    if initial_requests and generated_requests:
+        # 合并初始状态和新生成的请求
+        all_requests = initial_requests + generated_requests
+        all_requests.sort(key=lambda r: r.arrival_time)
+        print(f"\n合并请求: 初始={len(initial_requests)}, 新生成={len(generated_requests)}, 总计={len(all_requests)}")
+    elif initial_requests:
+        # 只有初始状态
+        all_requests = initial_requests
+        print(f"\n使用初始状态请求: {len(all_requests)}")
+    elif generated_requests:
+        # 只有新生成的请求
+        all_requests = generated_requests
+        print(f"\n使用新生成请求: {len(all_requests)}")
     else:
-        csv_path = config['data']['request_file']
+        # 从文件加载（原有逻辑）
+        if request_file:
+            csv_path = request_file
+        else:
+            csv_path = config['data']['request_file']
+        
+        print(f"从 {csv_path} 加载请求...")
+        all_requests = load_requests(csv_path, config['data'].get('L_filter'))
     
-    # 加载请求
-    print(f"从 {csv_path} 加载请求...")
-    requests = load_requests(csv_path, config['data'].get('L_filter'))
-    
-    if not requests:
+    if not all_requests:
         print("错误：没有加载到请求")
         return
+    
+    print(f"总请求数: {len(all_requests)}")
     
     # 显示配置信息
     print("\n系统配置:")
@@ -205,15 +282,43 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
     print("\n初始化系统...")
     policy = AdvancedPolicy(config['control'])
     
-    # 创建仿真器
-    simulator = VLLMSimulator(config, policy)
+    # 判断是否使用带状态的仿真器
+    use_state_simulator = (
+        config.get('initial_state', {}).get('enabled', False) or
+        config.get('state_save', {}).get('enabled', False)
+    )
+    
+    if use_state_simulator:
+        print("使用支持状态管理的仿真器")
+        
+        # 准备初始请求（如果有的话）
+        initial_requests_for_sim = None
+        if initial_requests:
+            # 筛选出需要在初始状态中的请求
+            initial_requests_for_sim = [
+                req for req in all_requests 
+                if req.status in [RequestStatus.WAITING, RequestStatus.RUNNING, RequestStatus.SWAPPED]
+            ]
+        
+        # 创建带状态管理的仿真器
+        simulator = VLLMSimulatorWithState(
+            config=config,
+            control_policy=policy,
+            initial_time=initial_time,
+            initial_requests=initial_requests_for_sim,
+            state_save_config=config.get('state_save', {}),
+            output_dir=output_dir
+        )
+    else:
+        # 使用普通仿真器
+        simulator = VLLMSimulator(config, policy)
     
     # 运行仿真
     print("\n开始仿真...")
     print(f"策略组合: {policy}")
     start_time = time.time()
     
-    results = simulator.run(requests)
+    results = simulator.run(all_requests)
     
     end_time = time.time()
     elapsed = end_time - start_time
@@ -262,8 +367,8 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
     meta_info = {
         'experiment_time': datetime.now().isoformat(),
         'config_path': config_path,
-        'request_file': csv_path,
-        'total_requests': len(requests),
+        'request_file': config['data']['request_file'],
+        'total_requests': len(all_requests),
         'completed_requests': results['completed_requests'],
         'total_time': results['total_time'],
         'output_dir': output_dir,
@@ -303,11 +408,18 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
             B_total = config['system']['B']
             d_0 = config['system']['d_0']
             d_1 = config['system']['d_1']
-            num_reqs = len(requests)
+            num_reqs = len(all_requests)
             
             print(f"系统参数: M_total={M_total}, B={B_total}, d_0={d_0}, d_1={d_1}")
             arrival_end_str = f"{arrival_end:.2f}" if arrival_end else "N/A"
-            print(f"请求统计: 总数={num_reqs}, 到达结束时间={arrival_end_str}")
+            print(f"请求统计: 总数={len(all_requests)}, 到达结束时间={arrival_end_str}")
+            
+            # 获取状态保存的批次ID（如果有）
+            state_save_batches = None
+            if 'state_save' in config and config['state_save'].get('enabled', False):
+                state_save_batches = config['state_save'].get('batch_ids', [])
+                if state_save_batches:
+                    print(f"状态保存批次: {state_save_batches}")
             
             # 调用可视化函数
             plot_queue_dynamics(
@@ -317,7 +429,8 @@ def run_experiment(config_path: str = "config/config_with_generation.yaml",
                 B_total=B_total,
                 d_0=d_0,
                 d_1=d_1,
-                num_requests=num_reqs
+                num_requests=num_reqs,
+                state_save_batches=state_save_batches
             )
             print("可视化图表已生成")
         except Exception as e:

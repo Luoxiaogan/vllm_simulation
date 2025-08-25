@@ -1,0 +1,44 @@
+# 测试状态保存功能的配置文件
+
+# 数据生成配置
+generation:
+  enabled: true
+  types: "{(20,20,5.1)}"
+  num_requests: 1000  # 生成较少的请求用于测试
+  output: "data/input/test_state.csv"
+  seed: 42
+
+# 状态保存配置 - 启用
+state_save:
+  enabled: true
+  batch_ids: [50, 100, 200]  # 在这些批次保存状态
+  save_completed: true
+
+# 初始状态配置 - 暂时禁用
+initial_state:
+  enabled: false
+  state_file: null
+  continue_generation: false
+
+system:
+  M_total: 10000
+  B: 10000
+  d_0: 0.003
+  d_1: 0.00032
+
+control:
+  queue_policy: FCFS
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/test_state.csv
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 42
+  verbose: true
+  progress_interval: 10

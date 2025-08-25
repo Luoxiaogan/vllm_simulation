@@ -11,16 +11,43 @@ generation:
   # 请求类型定义，格式: "{(prefill1,decode1,rate1),(prefill2,decode2,rate2),...}"
   # 单类型示例: "{(20,20,5.1)}"
   # 多类型示例: "{(10,20,3.0),(50,100,2.0)}"
-  types: "{(20,20,4.1)}"
+  types: "{(20,20,5.04)}"
   
   # 生成的请求总数
   num_requests: 20000
   
   # 输出文件路径（相对于项目根目录）
-  output: "data/input/single_type.csv"
+  output: "data/input/type.csv"
   
   # 随机种子（用于可重现性）
   seed: 42
+
+# ===== 状态保存配置 =====
+state_save:
+  # 是否启用状态保存
+  enabled: true
+  
+  # 保存状态的批次ID列表
+  # 例如：[100, 500, 1000] 会在第100、500、1000批次时保存状态
+  batch_ids: [12000]
+  
+  # 是否在状态文件中包含已完成的请求
+  # 保留完整历史有助于分析和调试
+  # 加载时会自动过滤，所以不影响使用
+  save_completed: false
+
+# ===== 初始状态配置 =====
+initial_state:
+  # 是否从状态文件加载初始状态
+  enabled: false
+  
+  # 状态文件路径（相对于项目根目录）
+  # 例如："data/experiments/experiment_20240825_103000_1234/states/state_batch_500.csv"
+  state_file: null
+  
+  # 是否在加载状态后继续生成新请求
+  # 如果为true，generation配置也需要enabled=true
+  continue_generation: false
 
 system:
   # GPU内存容量（tokens）

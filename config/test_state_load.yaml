@@ -1,0 +1,44 @@
+# 测试状态加载功能的配置文件
+
+# 初始状态配置 - 启用
+initial_state:
+  enabled: true
+  state_file: "data/experiments/experiment_20250825_121350_5627/states/state_batch_100.csv"
+  continue_generation: true  # 继续生成新请求
+
+# 数据生成配置 - 继续生成
+generation:
+  enabled: true
+  types: "{(20,20,5.1)}"  # 使用相同的类型
+  num_requests: 500  # 额外生成500个请求
+  output: "data/input/test_continue.csv"
+  seed: 123  # 不同的种子
+
+# 状态保存配置
+state_save:
+  enabled: true
+  batch_ids: [150, 250, 350]  # 新的保存点
+  save_completed: true
+
+system:
+  M_total: 10000
+  B: 10000
+  d_0: 0.003
+  d_1: 0.00032
+
+control:
+  queue_policy: FCFS
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/test_continue.csv
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 123
+  verbose: true
+  progress_interval: 10

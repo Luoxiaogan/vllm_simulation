@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 def plot_queue_dynamics(csv_path: str, arrival_end: float = None, 
                        M_total: int = None, B_total: int = None,
                        d_0: float = None, d_1: float = None,
-                       num_requests: int = None):
+                       num_requests: int = None, state_save_batches: list = None):
     """
     Plot system dynamics in two subplots (2x1 layout)
     
@@ -26,6 +26,7 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
         d_0: Base batch execution time (optional)
         d_1: Per-token execution time coefficient (optional)
         num_requests: Total number of requests (optional)
+        state_save_batches: List of batch IDs where state was saved (optional)
     """
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found")
@@ -107,6 +108,28 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     if arrival_end is not None:
         ax1.axvline(x=arrival_end, color='black', linestyle='--', linewidth=2, 
                    alpha=0.7, label=f'Arrival End ({arrival_end:.1f})')
+    
+    # Add vertical lines for state save batches if provided
+    if state_save_batches:
+        # Find the times corresponding to these batch IDs
+        state_save_info = []
+        for batch_id in state_save_batches:
+            # Find the row with this batch_id
+            batch_rows = df[df['batch_id'] == batch_id]
+            if not batch_rows.empty:
+                save_time = batch_rows['time'].iloc[0]
+                state_save_info.append((batch_id, save_time))
+                ax1.axvline(x=save_time, color='red', linestyle='--', linewidth=1.5, 
+                           alpha=0.6)
+        
+        # Create a combined legend label with batch IDs and times
+        if state_save_info:
+            batch_ids_str = str([b for b, _ in state_save_info])
+            times_str = ', '.join([f'{t:.0f}' for _, t in state_save_info])
+            legend_label = f'State Save {batch_ids_str}\n(t={times_str})'
+            # Add a dummy line for the legend
+            ax1.plot([], [], color='red', linestyle='--', linewidth=1.5, 
+                    alpha=0.6, label=legend_label)
     
     # Set legend
     ax1.legend(loc='upper left', fontsize=10)

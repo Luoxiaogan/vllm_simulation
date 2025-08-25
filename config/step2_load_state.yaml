@@ -1,0 +1,43 @@
+# Step 2: 从保存的状态恢复并继续
+# python experiments/run_advanced_with_generation.py --config config/step2_load_state.yaml
+
+initial_state:
+  enabled: true                    # 开启状态加载
+  # 请替换为实际的实验目录和批次ID
+  state_file: "data/experiments/experiment_20250826_015527_5736/states/state_batch_2950.csv"
+  continue_generation: true        # 继续生成新请求（设为false则只运行已有请求）
+
+generation:
+  enabled: true                    # 如果continue_generation为true，这里也必须为true
+  types: "{(20,20,5.0)}"          # 保持相同的请求类型
+  num_requests: 10000               # 额外生成5000个请求
+  output: "data/input/continued.csv"
+  seed: 123                        # 使用不同的种子
+
+state_save:
+  enabled: false                    # 可选：继续保存新的状态
+  batch_ids: [11000, 12000, 13000]
+  save_completed: true
+
+system:
+  M_total: 10000
+  B: 10000
+  d_0: 0.003
+  d_1: 0.00032
+
+control:
+  queue_policy: FCFS
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/continued.csv
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 123
+  verbose: true
+  progress_interval: 100
