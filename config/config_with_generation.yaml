@@ -1,0 +1,100 @@
+# vLLM仿真系统配置文件
+# 支持4种策略组合：(swap/sacrifice) × (conservative/aggressive)
+# 此版本包含数据生成配置，可一站式完成数据生成和实验
+
+# ===== 数据生成配置 =====
+generation:
+  # 是否启用自动数据生成
+  # 设置为false时将跳过数据生成，直接使用data.request_file指定的文件
+  enabled: true
+  
+  # 请求类型定义，格式: "{(prefill1,decode1,rate1),(prefill2,decode2,rate2),...}"
+  # 单类型示例: "{(20,20,5.1)}"
+  # 多类型示例: "{(10,20,3.0),(50,100,2.0)}"
+  types: "{(20,20,4.1)}"
+  
+  # 生成的请求总数
+  num_requests: 20000
+  
+  # 输出文件路径（相对于项目根目录）
+  output: "data/input/single_type.csv"
+  
+  # 随机种子（用于可重现性）
+  seed: 42
+
+system:
+  # GPU内存容量（tokens）
+  M_total: 10000
+  
+  # 批次token预算上限
+  B: 10000
+  
+  # 批次执行时间模型：duration = d_0 + d_1 * batch_tokens
+  d_0: 0.003        # 基础执行时间
+  d_1: 0.00032       # 每token边际时间
+
+control:
+  # 队列调度策略
+  queue_policy: FCFS      # First-Come-First-Served
+  
+  # ===== 核心策略配置（修改这两个参数实现4种组合）=====
+  
+  # 抢占模式：决定被抢占请求的处理方式
+  # - "swap": 保留KV缓存和解码进度，交换到CPU内存
+  # - "sacrifice": 清除KV缓存，重置解码进度到0
+  preemption_mode: sacrifice
+  
+  # 抢占策略：决定何时触发抢占
+  # - "conservative": 保守策略，仅在内存增长阶段必要时抢占
+  # - "aggressive": 激进策略，为高优先级请求主动抢占
+  preemption_strategy: aggressive
+  
+  # ===== 4种组合说明 =====
+  # 1. swap + conservative: 最稳定，适合长请求和稳定负载。大量超长请求，这些请求的重计算成本极高，绝对不能被牺牲。
+  # 2. swap + aggressive: 平衡性能和公平性。中短途请求，偶尔的重计算成本可以接受。
+  # 3. sacrifice + conservative: 简单高效，适合短请求
+  # 4. sacrifice + aggressive: vLLM默认，最激进，优先级严格，适合突发负载
+
+  # 高级选项(只在swap+aggressive的时候起作用)
+  # WAITING请求是否可以触发抢占（仅swap模式下有效）
+  # - false: swap模式下只有SWAPPED请求可触发抢占（推荐）
+  # - true: swap模式下WAITING请求也可触发抢占
+  allow_waiting_preempt: false
+  # swap + aggressive + false: 只用swapped抢占
+  # swap + aggressive + true: 用waiting和swapped抢占
+  
+  # Victim选择策略
+  # - LIFO: 优先抢占最晚进入RUNNING的请求（保护老请求）
+  victim_policy: LIFO
+
+data:
+  # 输入请求文件
+  request_file: data/input/single_type.csv
+  
+  # 实验结果目录
+  experiments_dir: data/experiments
+  
+  # 最大解码长度过滤（null表示不过滤）
+  L_filter: null
+
+experiment:
+  # 随机种子（保证可重现性）
+  seed: 42
+  
+  # 详细输出
+  verbose: true
+  
+  # 进度报告间隔（批次数）
+  progress_interval: 10
+
+# ===== 使用示例 =====
+# 一站式运行（自动生成数据并运行实验）:
+# python experiments/run_advanced_with_generation.py
+# python experiments/run_advanced_with_generation.py --config config/config_with_generation.yaml
+#
+# 如果只想运行实验不生成数据，设置 generation.enabled: false
+# 或者使用原始脚本:
+# python experiments/run_advanced.py --config config/config.yaml
+#
+# 测试所有4种策略组合:
+# python experiments/test_all_strategies.py

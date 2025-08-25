@@ -79,6 +79,7 @@ arrival_time, prefill_length, decode_length
 | memory_utilization | 内存利用率 |
 | batch_duration | 批次执行时间 |
 | completed_count | 累计完成数 |
+| batch_sacrifice_count | 本批次sacrifice数量 |
 
 #### 2. request_traces.csv - 请求级轨迹
 | 列名 | 含义 |
@@ -113,6 +114,22 @@ arrival_time, prefill_length, decode_length
 #### 8. experiment_meta.yaml - 实验元数据
 记录实验时间、路径、策略等元信息
 
+#### 9. sacrifice_snapshot.csv - Sacrifice事件详情（仅sacrifice模式）
+| 列名 | 含义 |
+|------|------|
+| time | sacrifice发生时间 |
+| req_id | 被sacrifice的请求ID |
+| current_decode_position | sacrifice时的解码位置 |
+| memory_freed | 释放的内存量 |
+| running_count_same_position | 同位置的running请求数 |
+| total_running_count | running队列总请求数 |
+
+#### 10. sacrifice_distribution.csv - Sacrifice概率分布（仅sacrifice模式）
+宽格式矩阵，每行代表一个sacrifice事件，列为各decode_position的累积概率分布
+
+#### 11. sacrifice_conditional_prob_timeline.csv - 条件概率时间序列（仅sacrifice模式）
+宽格式矩阵，记录P(sacrifice|position,time)的时间演化
+
 ### 控制策略组合
 
 系统支持4种策略组合：(swap/sacrifice) × (conservative/aggressive)
@@ -131,9 +148,20 @@ arrival_time, prefill_length, decode_length
 3. **sacrifice + conservative**: 简单高效，适合短请求
 4. **sacrifice + aggressive**: 最激进，优先级严格，适合突发负载
 
+#### 调度器实现（vLLM对齐）
+系统实现了与vLLM一致的三阶段调度：
+1. **Phase 1 - Prefill（准入）**: 从WAITING/SWAPPED队列准入请求，不触发抢占
+2. **Phase 2 - Running（内存压力处理）**: 批量处理内存压力，选择victims进行抢占
+3. **Phase 3 - Queue Update（队列更新）**: 将被抢占的请求批量加入相应队列
+
+关键设计决策：
+- **B约束仅在执行时应用**：准入阶段不检查B约束，只在select_execution_batch时应用
+- **批量内存压力处理**：PD分离场景下，批量处理效率更高
+- **LIFO victim选择**：基于enter_running_times选择最晚进入的请求
+
 #### 其他策略参数
 - **队列调度**: FCFS（First-Come-First-Served）
-- **Victim选择**: LIFO（最晚进入RUNNING的优先被抢占）
+- **Victim选择**: LIFO（基于enter_running_times，最晚进入RUNNING的优先被抢占）
 - **准入优先级**: 
   - Aggressive模式：SWAPPED > WAITING（严格优先级）
   - Conservative模式：优先恢复但不抢占
@@ -182,6 +210,7 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 - **等待时间**：first_enter_running_time - arrival_time
 - **执行时间**：completion_time - first_enter_running_time
 - **Swap次数**：len(swap_events)
+- **Sacrifice次数**：len(sacrifice_events)
 - **中断服务时间**：总的swapped状态时间
 
 ### 系统级指标
@@ -191,6 +220,12 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 - **GPU内存利用率**：avg(gpu_memory_used/M_total)
 - **队列长度统计**：mean, max, std
 - **Swap频率**：swap事件数/时间
+- **Sacrifice频率**：sacrifice事件数/时间
+
+### Sacrifice模式专有指标
+- **条件概率P(sacrifice|position)**：给定decode位置被sacrifice的概率
+- **位置分布**：各decode位置被sacrifice的频次
+- **浪费token数**：因sacrifice而重新计算的token总量
 
 ### 稳定性分析
 - **队列稳定性**：队列长度是否有界
@@ -226,30 +261,39 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 
 ### 核心模块
 - **core/**: 基础数据结构
-  - request.py: Request类，包含swap/sacrifice事件
-  - system_state.py: 系统状态，管理三个队列
+  - request.py: Request类，包含SwapEvent和SacrificeEvent
+  - system_state.py: 系统状态，管理WAITING/RUNNING/SWAPPED三个队列
+  - constants.py: 系统常量定义
 - **simulation/**: 仿真引擎
   - vllm_simulator.py: 统一仿真器，支持所有策略组合
-  - event_logger.py: 事件记录和CSV输出
+  - base_simulator.py: 仿真器基类
+  - event_logger.py: 事件记录和CSV输出，生成11种CSV文件
 - **control/**: 控制策略
-  - advanced_policy.py: 高级策略，实现4种组合
+  - advanced_policy.py: vLLM对齐的三阶段调度器，实现4种策略组合
   - base_policy.py: 策略基类
 - **fluid_model/**: ODE系统（方程、参数估计、求解）
 
 ### 分析工具
 - **analysis/**: 性能指标计算、统计分析
-- **visualization/**: 可视化（动态图、对比图）
+- **visualization/**: 可视化工具
+  - draw.py: 绘制队列动态、sacrifice动态、条件概率等图表
 
 ### 实验脚本
 - **experiments/**: 各类实验的执行脚本
-- **data/**: 输入数据生成、输出数据存储
+  - run_advanced.py: 运行单次仿真并生成可视化
+  - test_all_strategies.py: 测试所有4种策略组合
+- **data/**: 数据目录
+  - input/: 输入数据和生成脚本
+    - generate.sh: 一键生成测试数据
+    - generate_requests.py: 请求生成器
+  - experiments/: 实验结果存储（带时间戳目录）
 
 ## 使用方法
 
 ### 快速开始
 ```bash
-# 生成测试数据
-python data/input/generate_requests.py
+# 生成测试数据（一键生成所有配置）
+bash data/input/generate.sh
 
 # 运行高级策略仿真（使用默认配置）
 python experiments/run_advanced.py
@@ -263,8 +307,9 @@ python experiments/run_advanced.py --mode swap --strategy aggressive
 # 测试所有4种策略组合
 python experiments/test_all_strategies.py
 
-# 生成可视化报告
-python visualization/plot_dynamics.py
+# 直接查看生成的PNG图片（在实验目录下）
+# - queue_dynamics.png: 队列动态和内存使用
+# - sacrifice_dynamics.png: sacrifice事件分析（仅sacrifice模式）
 ```
 
 ### 配置文件
@@ -294,19 +339,33 @@ experiment:
   progress_interval: 100
 ```
 
+## 可视化输出
+
+系统自动生成两种主要可视化图表：
+
+### 1. queue_dynamics.png - 队列动态图（2子图）
+- **上图**：队列大小变化（WAITING、RUNNING、Sacrifice事件）
+- **下图**：内存和Token使用情况（GPU Memory、Batch Tokens）
+
+### 2. sacrifice_dynamics.png - Sacrifice分析图（3子图，仅sacrifice模式）
+- **上图**：双轴图 - Sacrifice事件频次和累计浪费tokens
+- **中图**：各decode位置的累积概率分布随时间演化
+- **下图**：条件概率P(sacrifice|position,time)的时间序列
+
 ## 扩展计划
 
-### Sacrifice模式
-Sacrifice模式已完全实现，通过设置 `preemption_mode: sacrifice` 启用：
-1. 被牺牲的请求重置decode_position为0
-2. 重新加入WAITING队列队首（高优先级）
-3. 支持与conservative/aggressive策略组合
+### 已实现功能
+1. **完整的Sacrifice模式**：重置进度、高优先级重新调度
+2. **vLLM对齐的三阶段调度器**：Prefill、Running、Queue Update
+3. **详细的sacrifice事件追踪**：包含上下文信息的条件概率分析
+4. **批量内存压力处理**：优化PD分离场景
 
-### 高级功能
+### 待实现功能
 1. 多节点仿真
 2. 异构请求类型
 3. 自适应控制策略
 4. 在线学习优化
+5. 流体ODE求解器集成
 
 ## 参考文献
 - fluid_modeling.tex: 流体模型理论推导
