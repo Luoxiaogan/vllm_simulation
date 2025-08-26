@@ -14,7 +14,9 @@ import matplotlib.pyplot as plt
 def plot_queue_dynamics(csv_path: str, arrival_end: float = None, 
                        M_total: int = None, B_total: int = None,
                        d_0: float = None, d_1: float = None,
-                       num_requests: int = None, state_save_batches: list = None):
+                       num_requests: int = None, state_save_batches: list = None,
+                       mode: str = None, theoretical_lambda: float = None,
+                       truncation_info: dict = None, request_file: str = None):
     """
     Plot system dynamics in two subplots (2x1 layout)
     
@@ -27,6 +29,9 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
         d_1: Per-token execution time coefficient (optional)
         num_requests: Total number of requests (optional)
         state_save_batches: List of batch IDs where state was saved (optional)
+        mode: 'explore' or 'truncate' (optional)
+        theoretical_lambda: Theoretical arrival rate (optional)
+        truncation_info: Dictionary with truncation details (optional)
     """
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found")
@@ -52,7 +57,15 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     # Add super title with system parameters and statistics
     title_lines = []
     
-    # Line 1: System parameters
+    # 第一行：模式信息
+    if mode == 'explore':
+        title_lines.append("Mode: EXPLORE")
+    elif mode == 'truncate' and truncation_info:
+        truncation_batch = truncation_info.get('truncation_batch_id', 'N/A')
+        truncation_time = truncation_info.get('truncation_time', 0)
+        title_lines.append(f"Mode: TRUNCATE (batch_{truncation_batch} @ t={truncation_time:.2f})")
+    
+    # 第二行：系统参数
     params = []
     if M_total is not None:
         params.append(f"M={M_total:,}")
@@ -64,21 +77,71 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     if params:
         title_lines.append("System Config: " + "  |  ".join(params))
     
-    # Line 2: Statistics
-    stats = []
-    if num_requests is not None:
-        stats.append(f"Requests: {num_requests}")
-    stats.append(f"Sim Time: {total_time:.1f}")
-    if avg_arrival_rate > 0:
-        stats.append(f"λ_arr: {avg_arrival_rate:.2f}/t")
-    if avg_completion_rate > 0:
-        stats.append(f"λ_comp: {avg_completion_rate:.2f}/t")
-    if completed_count > 0 and num_requests:
-        completion_ratio = (completed_count / num_requests * 100)
-        stats.append(f"Completed: {completed_count}/{num_requests} ({completion_ratio:.1f}%)")
-    
-    if stats:
-        title_lines.append("Simulation Stats: " + "  |  ".join(stats))
+    # 根据模式显示不同的统计信息
+    if mode == 'truncate' and truncation_info:
+        # 截断模式：显示两个阶段的信息
+        # Phase 1
+        phase1_stats = []
+        phase1_requests = truncation_info.get('phase1_requests', 0)
+        phase1_lambda_theory = truncation_info.get('phase1_lambda_theory', 0)
+        phase1_lambda_actual = truncation_info.get('phase1_lambda_actual', 0)
+        phase1_end_time = truncation_info.get('truncation_time', 0)
+        
+        phase1_stats.append(f"Requests: {phase1_requests}")
+        if phase1_lambda_theory > 0:
+            phase1_stats.append(f"λ_theory: {phase1_lambda_theory:.2f}/t")
+        if phase1_lambda_actual > 0:
+            phase1_stats.append(f"λ_actual: {phase1_lambda_actual:.2f}/t")
+        
+        title_lines.append(f"Phase 1 (t=0-{phase1_end_time:.0f}): " + "  |  ".join(phase1_stats))
+        
+        # Phase 2
+        phase2_stats = []
+        phase2_requests = truncation_info.get('phase2_requests', 0)
+        phase2_lambda_theory = truncation_info.get('phase2_lambda_theory', 0)
+        phase2_lambda_actual = truncation_info.get('phase2_lambda_actual', 0)
+        phase2_start = phase1_end_time
+        phase2_end = truncation_info.get('new_requests_end_time', arrival_end or 0)
+        
+        phase2_stats.append(f"Requests: {phase2_requests}")
+        if phase2_lambda_theory > 0:
+            phase2_stats.append(f"λ_theory: {phase2_lambda_theory:.2f}/t")
+        if phase2_lambda_actual > 0:
+            phase2_stats.append(f"λ_actual: {phase2_lambda_actual:.2f}/t")
+        
+        title_lines.append(f"Phase 2 (t={phase2_start:.0f}-{phase2_end:.0f}): " + "  |  ".join(phase2_stats))
+        
+        # Overall stats
+        overall_stats = []
+        overall_stats.append(f"Total: {num_requests}")
+        overall_stats.append(f"Sim Time: {total_time:.1f}")
+        if avg_arrival_rate > 0:
+            overall_stats.append(f"λ_avg: {avg_arrival_rate:.2f}/t")
+        if avg_completion_rate > 0:
+            overall_stats.append(f"λ_comp: {avg_completion_rate:.2f}/t")
+        if completed_count > 0 and num_requests:
+            completion_ratio = (completed_count / num_requests * 100)
+            overall_stats.append(f"Completed: {completed_count}/{num_requests} ({completion_ratio:.1f}%)")
+        
+        title_lines.append("Overall Stats: " + "  |  ".join(overall_stats))
+    else:
+        # 探索模式或默认模式
+        stats = []
+        if num_requests is not None:
+            stats.append(f"Requests: {num_requests}")
+        stats.append(f"Sim Time: {total_time:.1f}")
+        if avg_arrival_rate > 0:
+            stats.append(f"λ_arr(actual): {avg_arrival_rate:.2f}/t")
+        if theoretical_lambda and theoretical_lambda > 0:
+            stats.append(f"λ_arr(theory): {theoretical_lambda:.2f}/t")
+        if avg_completion_rate > 0:
+            stats.append(f"λ_comp: {avg_completion_rate:.2f}/t")
+        if completed_count > 0 and num_requests:
+            completion_ratio = (completed_count / num_requests * 100)
+            stats.append(f"Completed: {completed_count}/{num_requests} ({completion_ratio:.1f}%)")
+        
+        if stats:
+            title_lines.append("Stats: " + "  |  ".join(stats))
     
     # Set the suptitle with multiple lines
     if title_lines:
@@ -203,6 +266,313 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     
     # 如果存在sacrifice数据，绘制sacrifice动态图
     plot_sacrifice_dynamics(exp_dir, request_file=None)
+    
+    # 绘制arrival dynamics图（external vs internal）
+    plot_arrival_dynamics(exp_dir, request_file=request_file, 
+                         mode=mode, truncation_info=truncation_info,
+                         state_save_batches=state_save_batches,
+                         d_0=d_0, d_1=d_1)
+
+
+def plot_arrival_dynamics(exp_dir: str, request_file: str = None,
+                         mode: str = None, truncation_info: dict = None,
+                         state_save_batches: list = None,
+                         d_0: float = None, d_1: float = None):
+    """
+    绘制外部到达(external arrival)和内部到达(internal arrival)的对比图
+    
+    Args:
+        exp_dir: 实验目录路径
+        request_file: 原始请求文件路径
+        mode: 'explore'或'truncate'
+        truncation_info: 截断信息字典
+        state_save_batches: 标记批次列表
+    """
+    import csv
+    
+    # 检查sacrifice_snapshot.csv是否存在
+    sacrifice_csv = os.path.join(exp_dir, 'sacrifice_snapshot.csv')
+    if not os.path.exists(sacrifice_csv):
+        print("No sacrifice_snapshot.csv found, skipping arrival dynamics plot")
+        return
+    
+    # 读取batch_snapshots.csv获取时间信息
+    batch_csv = os.path.join(exp_dir, 'batch_snapshots.csv')
+    if not os.path.exists(batch_csv):
+        print("No batch_snapshots.csv found, skipping arrival dynamics plot")
+        return
+    
+    # 读取batch snapshots数据
+    df_batch = pd.read_csv(batch_csv)
+    
+    # 读取sacrifice数据
+    df_sacrifice = pd.read_csv(sacrifice_csv)
+    if df_sacrifice.empty:
+        print("No sacrifice events found, skipping arrival dynamics plot")
+        return
+    
+    # 读取请求轨迹文件来获取external arrivals
+    request_traces_csv = os.path.join(exp_dir, 'request_traces.csv')
+    if not os.path.exists(request_traces_csv):
+        print("No request_traces.csv found, skipping arrival dynamics plot")
+        return
+    
+    df_requests = pd.read_csv(request_traces_csv)
+    
+    # 获取时间范围 - 使用仿真的最大时间（最后一个批次的时间）
+    # 这样即使arrival_end之后，仍然能看到internal arrivals
+    max_time = df_batch['time'].max() if not df_batch.empty else 0
+    
+    # 使用系统批次时间作为统一间隔
+    # 基于 d_0 + d_1 * B_max 计算间隔，但需要适当放大
+    if d_0 is not None and d_1 is not None and not df_batch.empty:
+        # 获取最大的batch_tokens
+        B_max = df_batch['batch_tokens'].max()
+        # 计算基础间隔
+        base_interval = d_0 + d_1 * B_max
+        # 使用一个合理的倍数（比如10倍）使间隔更合适
+        # 这样大约会有 max_time / (10 * base_interval) 个窗口
+        ws = 20
+        interval = round(base_interval * ws)
+        # 确保间隔在合理范围内
+        interval = max(interval, 20.0)  # 至少20个时间单位
+        interval = min(interval, max_time / 20)  # 至少有20个窗口
+    else:
+        # 如果没有提供d_0和d_1，使用默认值
+        interval = max_time / 50 if max_time > 0 else 20
+    
+    # 创建固定时间窗口
+    time_windows = np.arange(0, max_time + interval, interval)
+    window_centers = (time_windows[:-1] + time_windows[1:]) / 2  # 窗口中心点，用于绘图
+    
+    # 计算external arrivals - 固定时间窗口
+    external_incremental_windowed = []
+    external_cumulative_windowed = []
+    cumulative_count = 0
+    
+    for i in range(len(time_windows) - 1):
+        window_start = time_windows[i]
+        window_end = time_windows[i + 1]
+        # 统计这个窗口内的到达数
+        arrivals_in_window = len(df_requests[
+            (df_requests['arrival_time'] >= window_start) & 
+            (df_requests['arrival_time'] < window_end)
+        ])
+        external_incremental_windowed.append(arrivals_in_window)
+        cumulative_count += arrivals_in_window
+        external_cumulative_windowed.append(cumulative_count)
+    
+    # 计算internal arrivals - 映射到相同的时间窗口
+    internal_incremental_windowed = []
+    internal_cumulative_windowed = []
+    cumulative_sacrifice = 0
+    
+    for i in range(len(time_windows) - 1):
+        window_start = time_windows[i]
+        window_end = time_windows[i + 1]
+        # 统计这个窗口内的sacrifice数
+        sacrifices_in_window = len(df_sacrifice[
+            (df_sacrifice['time'] >= window_start) & 
+            (df_sacrifice['time'] < window_end)
+        ])
+        internal_incremental_windowed.append(sacrifices_in_window)
+        cumulative_sacrifice += sacrifices_in_window
+        internal_cumulative_windowed.append(cumulative_sacrifice)
+    
+    # 计算completions - 映射到相同的时间窗口
+    completion_incremental_windowed = []
+    
+    for i in range(len(time_windows) - 1):
+        window_start = time_windows[i]
+        window_end = time_windows[i + 1]
+        # 统计这个窗口内的完成数
+        completions_in_window = len(df_requests[
+            (df_requests['completion_time'] >= window_start) & 
+            (df_requests['completion_time'] < window_end) &
+            (df_requests['completion_time'].notna())
+        ])
+        completion_incremental_windowed.append(completions_in_window)
+    
+    # 为了兼容第一个子图（累积图），仍然计算基于batch时间点的累积值
+    # 但这只用于第一个子图
+    batch_time_points = sorted(df_batch['time'].unique())
+    external_cumulative = []
+    internal_cumulative = []
+    completion_cumulative = []  # 添加完成累积
+    
+    for t in batch_time_points:
+        # 累积：到时间t为止到达的请求数
+        arrived = len(df_requests[df_requests['arrival_time'] <= t])
+        external_cumulative.append(arrived)
+        # 累积：到时间t为止的sacrifice数量
+        sacrificed = len(df_sacrifice[df_sacrifice['time'] <= t])
+        internal_cumulative.append(sacrificed)
+        # 累积：到时间t为止完成的请求数
+        # 注意：completion_time可能包含NaN（未完成的请求）
+        completed = len(df_requests[(df_requests['completion_time'] <= t) & 
+                                    (df_requests['completion_time'].notna())])
+        completion_cumulative.append(completed)
+    
+    # 创建2x1子图
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
+    
+    # 添加标题（类似queue_dynamics的标题风格）
+    title_lines = []
+    
+    # 第一行：模式信息
+    if mode == 'explore':
+        title_lines.append("Mode: EXPLORE - Arrival Dynamics")
+    elif mode == 'truncate' and truncation_info:
+        truncation_batch = truncation_info.get('truncation_batch_id', 'N/A')
+        truncation_time = truncation_info.get('truncation_time', 0)
+        title_lines.append(f"Mode: TRUNCATE (batch_{truncation_batch} @ t={truncation_time:.2f}) - Arrival Dynamics")
+    else:
+        title_lines.append("Arrival Dynamics: External vs Internal")
+    
+    # 添加统计信息
+    stats = []
+    total_external = external_cumulative[-1] if external_cumulative else 0
+    total_internal = internal_cumulative[-1] if internal_cumulative else 0
+    stats.append(f"Total External: {total_external}")
+    stats.append(f"Total Internal (Sacrifice): {total_internal}")
+    if total_external > 0:
+        ratio = (total_internal / total_external * 100)
+        stats.append(f"Internal/External Ratio: {ratio:.1f}%")
+    
+    title_lines.append("Stats: " + "  |  ".join(stats))
+    
+    # 设置总标题
+    if title_lines:
+        suptitle_text = "\n".join(title_lines)
+        fig.suptitle(suptitle_text, fontsize=11, fontweight='bold', y=0.99,
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.3))
+    
+    # ========== 第一个子图：累积到达 ==========
+    ax1.plot(batch_time_points, external_cumulative, 
+            label='External Arrival (Cumulative)', 
+            color='blue', linewidth=2, marker='o', markersize=3)
+    
+    ax1.plot(batch_time_points, internal_cumulative,
+            label='Internal Arrival from Sacrifice (Cumulative)',
+            color='red', linewidth=2, marker='s', markersize=3)
+    
+    ax1.plot(batch_time_points, completion_cumulative,
+            label='Completion (Cumulative)',
+            color='green', linewidth=2, marker='^', markersize=3)
+    
+    # 添加标记线（如果有）
+    if state_save_batches and not df_batch.empty:
+        for batch_id in state_save_batches:
+            batch_rows = df_batch[df_batch['batch_id'] == batch_id]
+            if not batch_rows.empty:
+                save_time = batch_rows['time'].iloc[0]
+                ax1.axvline(x=save_time, color='red', linestyle='--', linewidth=1.5,
+                           alpha=0.6)
+        
+        # 添加图例标记
+        if state_save_batches:
+            if mode == 'truncate':
+                label = f'Truncation Point (batch_{state_save_batches[0]})'
+            else:
+                label = f'Candidate Points {state_save_batches}'
+            ax1.plot([], [], color='red', linestyle='--', linewidth=1.5,
+                    alpha=0.6, label=label)
+    
+    # 添加arrival_end标记线（如果有）
+    arrival_end_time = None
+    if truncation_info and 'new_requests_end_time' in truncation_info:
+        # 截断模式：使用新请求结束时间
+        arrival_end_time = truncation_info.get('new_requests_end_time')
+    elif df_requests is not None and not df_requests.empty:
+        # 探索模式或默认：使用最后一个请求的到达时间
+        arrival_end_time = df_requests['arrival_time'].max()
+    
+    if arrival_end_time is not None:
+        ax1.axvline(x=arrival_end_time, color='black', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Arrival End ({arrival_end_time:.1f})')
+    
+    # 添加仿真结束时间的标记线（绿色）
+    if not df_batch.empty:
+        sim_end_time = df_batch['time'].max()
+        ax1.axvline(x=sim_end_time, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Simulation End ({sim_end_time:.1f})')
+    
+    ax1.set_xlabel('Time', fontsize=12)
+    ax1.set_ylabel('Accumulated Number of Requests', fontsize=12)
+    ax1.set_title('Cumulative Arrivals: External vs Internal', fontsize=14, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.set_ylim(bottom=0)
+    
+    # ========== 第二个子图：增量到达（折线图） ==========
+    # 使用折线图显示固定窗口的增量
+    
+    # 外部到达的折线图 - 平滑的线，反映实际到达率
+    ax2.plot(window_centers, external_incremental_windowed,
+            label='External Arrival Rate (per window)',
+            color='blue', linewidth=2, marker='o', markersize=3, alpha=0.8)
+    
+    # 内部到达的折线图 - 可能较稀疏
+    ax2.plot(window_centers, internal_incremental_windowed,
+            label='Internal Arrival from Sacrifice (per window)',
+            color='red', linewidth=2, marker='s', markersize=3, alpha=0.8)
+    
+    # 完成的折线图
+    ax2.plot(window_centers, completion_incremental_windowed,
+            label='Completion Rate (per window)',
+            color='green', linewidth=2, marker='^', markersize=3, alpha=0.8)
+    
+    # 添加标记线（如果有）
+    if state_save_batches and not df_batch.empty:
+        for batch_id in state_save_batches:
+            batch_rows = df_batch[df_batch['batch_id'] == batch_id]
+            if not batch_rows.empty:
+                save_time = batch_rows['time'].iloc[0]
+                ax2.axvline(x=save_time, color='red', linestyle='--', linewidth=1.5,
+                           alpha=0.6)
+    
+    # 添加arrival_end标记线（如果有）- 这个在第一个子图中已经有了，第二个子图也需要
+    # 从truncation_info或其他参数中获取arrival_end时间
+    arrival_end_time = None
+    if truncation_info and 'new_requests_end_time' in truncation_info:
+        # 截断模式：使用新请求结束时间
+        arrival_end_time = truncation_info.get('new_requests_end_time')
+    elif df_requests is not None and not df_requests.empty:
+        # 探索模式或默认：使用最后一个请求的到达时间
+        arrival_end_time = df_requests['arrival_time'].max()
+    
+    if arrival_end_time is not None:
+        ax2.axvline(x=arrival_end_time, color='black', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Arrival End ({arrival_end_time:.1f})')
+    
+    # 添加仿真结束时间的标记线（绿色）
+    if not df_batch.empty:
+        sim_end_time = df_batch['time'].max()
+        ax2.axvline(x=sim_end_time, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Simulation End ({sim_end_time:.1f})')
+    
+    ax2.set_xlabel('Time', fontsize=12)
+    ax2.set_ylabel(f'Number of Requests (per {interval:.0f} time units)', fontsize=12)
+    # 如果使用了d_0 + d_1 * B_max计算间隔，在标题中显示
+    if d_0 is not None and d_1 is not None and not df_batch.empty:
+        B_max = df_batch['batch_tokens'].max()
+        base_interval = d_0 + d_1 * B_max
+        title_suffix = f" (interval: {interval:.0f} ≈ {ws}×({d_0:.3f} + {d_1:.5f}×{B_max:.0f}))"
+    else:
+        title_suffix = f" (interval: {interval:.0f})"
+    ax2.set_title(f'Incremental Arrivals per Time Window{title_suffix}', fontsize=14, fontweight='bold')
+    ax2.legend(loc='upper right', fontsize=10)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.set_ylim(bottom=0)
+    
+    # 调整布局
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    
+    # 保存图片
+    output_path = os.path.join(exp_dir, 'arrival_dynamics.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Arrival dynamics saved to: {output_path}")
+    plt.close(fig)
 
 
 def plot_sacrifice_dynamics(exp_dir: str, request_file: str = None):

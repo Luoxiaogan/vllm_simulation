@@ -1,0 +1,37 @@
+# 探索模式配置：完整运行仿真，标记候选截断点
+# 使用方法：python experiments/run_with_truncation.py --config config/explore_truncation.yaml --mode explore
+
+# 初始请求生成配置
+generation:
+  enabled: true
+  types: "{(20,20,5.1)}"          # 初始请求类型（高到达率）
+  num_requests: 20000              # 生成20000个请求
+  output: "data/input/explore.csv"
+  seed: 42
+
+# 探索配置：标记候选截断点
+explore:
+  candidate_batches: [2950, 3000, 3020, 3030]  # 候选截断点列表，会在图上用红色虚线标记
+
+system:
+  M_total: 10000
+  B: 10000
+  d_0: 0.003
+  d_1: 0.00032
+
+control:
+  queue_policy: FCFS
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/explore.csv  # 会被generation覆盖
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 42
+  verbose: true
+  progress_interval: 100

@@ -352,6 +352,60 @@ experiment:
 - **中图**：各decode位置的累积概率分布随时间演化
 - **下图**：条件概率P(sacrifice|position,time)的时间序列
 
+### 3. arrival_dynamics.png - 到达动态图（2子图）
+- **上图**：累积到达 - External Arrival、Internal Arrival (Sacrifice)、Completion
+- **下图**：增量到达率（每个时间窗口）- 显示三条线的速率变化
+- **时间间隔**：基于系统批次时间 interval = ws×(d_0 + d_1×B_max)，统一时间窗口便于对比
+- **标记线**：
+  - 红色虚线：候选截断点（explore模式）或截断点（truncate模式）
+  - 黑色虚线：Arrival End（外部到达结束）
+  - 绿色虚线：Simulation End（仿真结束）
+
+## 截断仿真模式
+
+### 探索模式（Explore Mode）
+用于完整运行仿真并标记候选截断点：
+```bash
+python experiments/run_with_truncation.py --config config/explore_truncation.yaml --mode explore
+```
+- 生成初始请求（高到达率）
+- 完整运行仿真
+- 在图上用红色虚线标记候选截断点
+- 保存完整的CSV文件和可视化
+
+### 截断模式（Truncate Mode）
+在指定批次截断并注入新请求：
+```bash
+python experiments/run_with_truncation.py --config config/apply_truncation.yaml --mode truncate
+```
+- 运行到截断点（如batch_3350）
+- 丢弃未到达的请求
+- 生成新请求（不同到达率）
+- 继续仿真至完成
+- 在arrival_dynamics图中清楚显示到达率变化
+
+### 关键实现细节
+
+#### 1. VLLMSimulatorWithTruncation
+- 继承自VLLMSimulator，不完全重写run方法
+- 在指定batch_id执行截断
+- 保存phase1和phase2的统计信息
+- 使用EventLogger保存完整CSV输出
+
+#### 2. 可视化标题增强
+- **探索模式**：显示理论和实际到达率
+- **截断模式**：分phase显示统计信息
+  - Phase 1 (t=0-截断时间): 原始请求统计
+  - Phase 2 (t=截断时间-结束): 新请求统计
+  - Overall Stats: 总体统计
+
+#### 3. Arrival Dynamics可视化
+- **External Arrival**：从request_traces.csv读取，显示实际外部到达
+- **Internal Arrival**：从sacrifice_snapshot.csv读取，显示sacrifice产生的内部到达
+- **Completion**：显示请求完成率，最终与external arrival相等
+- **固定时间窗口**：使用系统批次时间的倍数，确保两条线可比
+- **时间范围**：延续到仿真结束，不在arrival_end停止
+
 ## 扩展计划
 
 ### 已实现功能
@@ -378,3 +432,4 @@ experiment:
 - 可视化图表的标签、标题、图例使用英文（已在代码中实现）
 - 日志输出和用户交互文本使用中文
 - to memorize 回答问题使用中文
+- GIT_SSH_COMMAND="ssh -i ~/.ssh/github_key" git push.
