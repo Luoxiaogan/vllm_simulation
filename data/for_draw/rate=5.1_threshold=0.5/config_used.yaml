@@ -1,0 +1,37 @@
+admission_control:
+  enabled: true
+  threshold: 0.5
+control:
+  allow_waiting_preempt: false
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  queue_policy: FCFS
+  victim_policy: LIFO
+data:
+  L_filter: null
+  experiments_dir: data/experiments
+  request_file: data/input/explore_admission.csv
+experiment:
+  progress_interval: 100
+  seed: 42
+  verbose: true
+explore:
+  candidate_batches:
+  - 2950
+  - 3030
+  - 3100
+  - 3150
+generation:
+  enabled: true
+  num_requests: 40000
+  output: data/input/explore_admission.csv
+  seed: 42
+  types: '{(20,20,5.1)}'
+regression_interval:
+- 2500
+- 4000
+system:
+  B: 10000
+  M_total: 10000
+  d_0: 0.003
+  d_1: 0.00032

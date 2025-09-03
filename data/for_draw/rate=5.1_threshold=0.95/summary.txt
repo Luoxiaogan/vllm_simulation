@@ -1,0 +1,27 @@
+=== 仿真汇总报告 ===
+
+基本信息:
+  总时间: 7857.03
+  总批次数: 17125
+  完成请求数: 39882
+
+系统统计:
+  total_requests: 39882
+  waiting_count: 0
+  running_count: 0
+  swapped_count: 0
+  completed_count: 39882
+  total_admitted: 40571
+  total_swapped_out: 0
+  total_swapped_in: 0
+  gpu_memory_used: 0
+  gpu_memory_total: 10000
+  memory_utilization: 0.0
+
+性能指标:
+  avg_delay: 35.0106
+  max_delay: 112.7109
+  avg_waiting_time: 2.4740
+  avg_swap_count: 0.0000
+  throughput_requests: 5.0760
+  throughput_tokens: 101.5192

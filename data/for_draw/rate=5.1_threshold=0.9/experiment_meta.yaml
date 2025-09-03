@@ -1,0 +1,10 @@
+completed_requests: 39895
+mode: explore
+output_dir: data/experiments/explore_20250904_005850_8621
+preemption_mode: sacrifice
+preemption_strategy: aggressive
+request_file: data/input/explore_admission.csv
+timestamp: '20250904_005850'
+total_requests: 40000
+total_time: 7857.5297600000085
+wall_time: 1.1095843315124512

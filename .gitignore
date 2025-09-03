@@ -1,5 +1,7 @@
-data/
 /*.pyc
 .DS_Store
 **/__pycache__/
 *.pyc
+data/experiments/
+data/input/
+data/output/

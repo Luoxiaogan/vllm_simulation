@@ -67,6 +67,11 @@ class VLLMSimulatorWithTruncationAdmissionControl(VLLMSimulatorWithTruncation):
         # 计算当前内存使用率
         memory_usage = self.state.gpu_memory_used
         memory_total = self.state.M_total
+        
+        # 特殊情况：如果内存为0，总是允许准入（避免死锁）
+        if memory_usage == 0:
+            return True
+        
         memory_usage_ratio = memory_usage / memory_total if memory_total > 0 else 0
         
         # 更新最大内存使用率
@@ -88,14 +93,32 @@ class VLLMSimulatorWithTruncationAdmissionControl(VLLMSimulatorWithTruncation):
         Returns:
             是否继续仿真
         """
-        # 检查是否有运行中的请求
+        # 检查是否有任何活动（所有队列都空才真正结束）
         if not self.state.running and not self.state.waiting and not self.state.swapped:
             return False  # 仿真结束
         
         # 1. 如果没有运行中的批次，尝试构建新批次（带准入控制）
         if not self.state.running:
-            # 检查准入控制
-            if self._check_admission_allowed():
+            # 特殊情况：内存为0但有等待请求，必须允许尝试调度
+            if self.state.gpu_memory_used == 0 and (self.state.waiting or self.state.swapped):
+                # 内存已清空，强制尝试调度
+                self.control_policy.perform_scheduling_cycle(self.state, self.time)
+                
+                # 如果仍然无法调度，说明可能有其他问题（如请求太大）
+                if not self.state.running and self.state.waiting:
+                    # 获取等待队列中第一个请求的信息用于调试
+                    first_waiting = self.state.waiting[0] if self.state.waiting else None
+                    if first_waiting:
+                        req_memory = first_waiting.memory_requirement
+                        print(f"批次 {self.batch_id}: 警告 - 内存为0但无法调度请求 "
+                              f"(首个请求需要内存: {req_memory}, 系统内存: {self.state.M_total})")
+                    
+                    # 不结束仿真，返回True继续等待
+                    # 这种情况下可能需要等待其他机制或人工干预
+                    return True
+            
+            # 正常的准入控制检查
+            elif self._check_admission_allowed():
                 # 允许准入，调用原有调度逻辑
                 self.control_policy.perform_scheduling_cycle(self.state, self.time)
             else:
@@ -114,9 +137,12 @@ class VLLMSimulatorWithTruncationAdmissionControl(VLLMSimulatorWithTruncation):
                         print(f"批次 {self.batch_id}: 准入控制生效 - "
                               f"拒绝WAITING→RUNNING转换 (内存使用: {memory_usage}/{memory_total} = {memory_ratio:.2%}), "
                               f"等待队列: {waiting_count}, 交换队列: {swapped_count}")
+                
+                # 即使准入控制拒绝，如果还有等待队列，也不应该结束仿真
+                # 应该继续等待已有请求完成释放内存
             
-            # 如果仍然没有批次，可能是等待队列为空或内存不足
-            if not self.state.running:
+            # 修改后的终止条件：只有当所有队列都空时才结束
+            if not self.state.running and not self.state.waiting and not self.state.swapped:
                 return False
         
         # 2. 从RUNNING列表中选择执行批次（受B约束）

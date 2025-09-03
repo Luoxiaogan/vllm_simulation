@@ -4,8 +4,8 @@
 # 初始请求生成配置
 generation:
   enabled: true
-  types: "{(20,20,6)}"          # 初始请求类型（高到达率）
-  num_requests: 120000             
+  types: "{(20,20,5.1)}"          # 初始请求类型（高到达率）
+  num_requests: 40000             
   output: "data/input/explore_admission.csv"
   seed: 42
 
