@@ -16,7 +16,8 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
                        d_0: float = None, d_1: float = None,
                        num_requests: int = None, state_save_batches: list = None,
                        mode: str = None, theoretical_lambda: float = None,
-                       truncation_info: dict = None, request_file: str = None):
+                       truncation_info: dict = None, request_file: str = None,
+                       regression_interval: list = None, admission_control: dict = None):
     """
     Plot system dynamics in two subplots (2x1 layout)
     
@@ -32,6 +33,9 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
         mode: 'explore' or 'truncate' (optional)
         theoretical_lambda: Theoretical arrival rate (optional)
         truncation_info: Dictionary with truncation details (optional)
+        request_file: Path to request file (optional)
+        regression_interval: Interval for linear regression (optional)
+        admission_control: Dictionary with admission control settings (optional)
     """
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found")
@@ -73,6 +77,11 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
         params.append(f"B={B_total:,}")
     if d_0 is not None and d_1 is not None:
         params.append(f"Exec Time: {d_0} + {d_1}×B(t)")
+    
+    # 添加准入控制信息
+    if admission_control and admission_control.get('enabled'):
+        threshold = admission_control.get('threshold', 1.0)
+        params.append(f"Admission Control: {threshold:.1%}")
     
     if params:
         title_lines.append("System Config: " + "  |  ".join(params))
@@ -271,13 +280,20 @@ def plot_queue_dynamics(csv_path: str, arrival_end: float = None,
     plot_arrival_dynamics(exp_dir, request_file=request_file, 
                          mode=mode, truncation_info=truncation_info,
                          state_save_batches=state_save_batches,
-                         d_0=d_0, d_1=d_1)
+                         d_0=d_0, d_1=d_1,
+                         regression_interval=regression_interval)
+    
+    # 绘制性能指标图（throughput和latency）
+    plot_performance_metrics(exp_dir, mode=mode, truncation_info=truncation_info,
+                            state_save_batches=state_save_batches,
+                            admission_control=admission_control)
 
 
 def plot_arrival_dynamics(exp_dir: str, request_file: str = None,
                          mode: str = None, truncation_info: dict = None,
                          state_save_batches: list = None,
-                         d_0: float = None, d_1: float = None):
+                         d_0: float = None, d_1: float = None,
+                         regression_interval: list = None):
     """
     绘制外部到达(external arrival)和内部到达(internal arrival)的对比图
     
@@ -429,17 +445,67 @@ def plot_arrival_dynamics(exp_dir: str, request_file: str = None,
     else:
         title_lines.append("Arrival Dynamics: External vs Internal")
     
-    # 添加统计信息
-    stats = []
+    # 根据模式显示不同的统计信息（类似queue_dynamics）
+    if mode == 'truncate' and truncation_info:
+        # 截断模式：显示两个阶段的信息
+        # Phase 1
+        phase1_stats = []
+        phase1_requests = truncation_info.get('phase1_requests', 0)
+        phase1_lambda_theory = truncation_info.get('phase1_lambda_theory', 0)
+        phase1_lambda_actual = truncation_info.get('phase1_lambda_actual', 0)
+        phase1_end_time = truncation_info.get('truncation_time', 0)
+        
+        phase1_stats.append(f"Requests: {phase1_requests}")
+        if phase1_lambda_theory > 0:
+            phase1_stats.append(f"λ_theory: {phase1_lambda_theory:.2f}/t")
+        if phase1_lambda_actual > 0:
+            phase1_stats.append(f"λ_actual: {phase1_lambda_actual:.2f}/t")
+        
+        title_lines.append(f"Phase 1 (t=0-{phase1_end_time:.0f}): " + "  |  ".join(phase1_stats))
+        
+        # Phase 2
+        phase2_stats = []
+        phase2_requests = truncation_info.get('phase2_requests', 0)
+        phase2_lambda_theory = truncation_info.get('phase2_lambda_theory', 0)
+        phase2_lambda_actual = truncation_info.get('phase2_lambda_actual', 0)
+        phase2_start = phase1_end_time
+        phase2_end = truncation_info.get('new_requests_end_time', 0)
+        
+        phase2_stats.append(f"Requests: {phase2_requests}")
+        if phase2_lambda_theory > 0:
+            phase2_stats.append(f"λ_theory: {phase2_lambda_theory:.2f}/t")
+        if phase2_lambda_actual > 0:
+            phase2_stats.append(f"λ_actual: {phase2_lambda_actual:.2f}/t")
+        
+        title_lines.append(f"Phase 2 (t={phase2_start:.0f}-{phase2_end:.0f}): " + "  |  ".join(phase2_stats))
+    
+    # 总体统计信息
+    overall_stats = []
     total_external = external_cumulative[-1] if external_cumulative else 0
     total_internal = internal_cumulative[-1] if internal_cumulative else 0
-    stats.append(f"Total External: {total_external}")
-    stats.append(f"Total Internal (Sacrifice): {total_internal}")
-    if total_external > 0:
-        ratio = (total_internal / total_external * 100)
-        stats.append(f"Internal/External Ratio: {ratio:.1f}%")
+    total_completion = completion_cumulative[-1] if completion_cumulative else 0
     
-    title_lines.append("Stats: " + "  |  ".join(stats))
+    overall_stats.append(f"Total External: {total_external}")
+    overall_stats.append(f"Total Internal: {total_internal}")
+    overall_stats.append(f"Total Completion: {total_completion}")
+    
+    # 计算平均速率
+    if batch_time_points:
+        total_time = batch_time_points[-1]
+        if total_time > 0:
+            avg_external_rate = total_external / total_time
+            avg_internal_rate = total_internal / total_time
+            avg_completion_rate = total_completion / total_time
+            overall_stats.append(f"λ_ext: {avg_external_rate:.2f}/t")
+            overall_stats.append(f"λ_int: {avg_internal_rate:.2f}/t")
+            overall_stats.append(f"μ: {avg_completion_rate:.2f}/t")
+    
+    # 计算比率
+    if total_external > 0:
+        internal_ratio = (total_internal / total_external * 100)
+        overall_stats.append(f"Int/Ext: {internal_ratio:.1f}%")
+    
+    title_lines.append("Overall Stats: " + "  |  ".join(overall_stats))
     
     # 设置总标题
     if title_lines:
@@ -496,6 +562,73 @@ def plot_arrival_dynamics(exp_dir: str, request_file: str = None,
         sim_end_time = df_batch['time'].max()
         ax1.axvline(x=sim_end_time, color='green', linestyle='--', linewidth=2,
                    alpha=0.7, label=f'Simulation End ({sim_end_time:.1f})')
+    
+    # ========== 线性回归分析 ==========
+    if regression_interval and len(regression_interval) == 2:
+        start_time, end_time = regression_interval
+        
+        # 转换为numpy数组以便使用布尔索引
+        batch_time_points_arr = np.array(batch_time_points)
+        external_cumulative_arr = np.array(external_cumulative)
+        internal_cumulative_arr = np.array(internal_cumulative)
+        completion_cumulative_arr = np.array(completion_cumulative)
+        
+        # 筛选时间范围内的数据点
+        mask = (batch_time_points_arr >= start_time) & (batch_time_points_arr <= end_time)
+        reg_times = batch_time_points_arr[mask]
+        reg_external = external_cumulative_arr[mask]
+        reg_internal = internal_cumulative_arr[mask]
+        reg_completion = completion_cumulative_arr[mask]
+        
+        if len(reg_times) > 1:
+            # 对三条线分别进行线性回归
+            # 1. External Arrival
+            slope_ext, intercept_ext = np.polyfit(reg_times, reg_external, 1)
+            reg_line_ext = slope_ext * reg_times + intercept_ext
+            ax1.plot(reg_times, reg_line_ext, 'k--', linewidth=2.5, alpha=0.8,
+                    label=f'Ext. Fit (λ={slope_ext:.2f} req/time)')
+            
+            # 2. Internal Arrival (Sacrifice)
+            slope_int, intercept_int = np.polyfit(reg_times, reg_internal, 1)
+            reg_line_int = slope_int * reg_times + intercept_int
+            ax1.plot(reg_times, reg_line_int, 'k-.', linewidth=2.5, alpha=0.8,
+                    label=f'Int. Fit (λ={slope_int:.2f} req/time)')
+            
+            # 3. Completion
+            slope_comp, intercept_comp = np.polyfit(reg_times, reg_completion, 1)
+            reg_line_comp = slope_comp * reg_times + intercept_comp
+            ax1.plot(reg_times, reg_line_comp, 'k:', linewidth=2.5, alpha=0.8,
+                    label=f'Comp. Fit (μ={slope_comp:.2f} req/time)')
+            
+            # 添加蓝色竖虚线标记回归区间
+            ax1.axvline(x=start_time, color='blue', linestyle=':', linewidth=2, alpha=0.6)
+            ax1.axvline(x=end_time, color='blue', linestyle=':', linewidth=2, alpha=0.6)
+            
+            # 添加文字标注（显示三个速率）
+            mid_time = (start_time + end_time) / 2
+            mid_value_ext = slope_ext * mid_time + intercept_ext
+            
+            # 计算标注位置（稍微偏离回归线）
+            y_range = ax1.get_ylim()[1] - ax1.get_ylim()[0]
+            offset_y = y_range * 0.08  # 偏移8%的y范围
+            
+            annotation_text = (f'Regression Interval: [{start_time:.0f}, {end_time:.0f}]\n'
+                             f'External: {slope_ext:.4f} req/time\n'
+                             f'Internal: {slope_int:.4f} req/time\n'
+                             f'Completion: {slope_comp:.4f} req/time')
+            
+            ax1.annotate(annotation_text,
+                        xy=(mid_time, mid_value_ext),
+                        xytext=(mid_time, mid_value_ext + offset_y),
+                        fontsize=9, color='black',
+                        bbox=dict(boxstyle='round,pad=0.5', facecolor='white', 
+                                edgecolor='black', alpha=0.9),
+                        ha='center')
+            
+            print(f"线性回归结果 (区间: {start_time}-{end_time}):")
+            print(f"  External Arrival: {slope_ext:.4f} req/time")
+            print(f"  Internal Arrival: {slope_int:.4f} req/time") 
+            print(f"  Completion Rate: {slope_comp:.4f} req/time")
     
     ax1.set_xlabel('Time', fontsize=12)
     ax1.set_ylabel('Accumulated Number of Requests', fontsize=12)
@@ -848,6 +981,209 @@ def plot_sacrifice_dynamics(exp_dir: str, request_file: str = None):
                 writer.writerows(cond_prob_rows)
             
             print(f"Conditional probability timeline saved to: {cond_prob_csv_path}")
+
+
+def plot_performance_metrics(exp_dir: str, mode: str = None, 
+                            truncation_info: dict = None,
+                            state_save_batches: list = None,
+                            admission_control: dict = None):
+    """
+    绘制性能指标图：平均解码吞吐量和平均延迟
+    
+    Args:
+        exp_dir: 实验目录路径
+        mode: 'explore'或'truncate'
+        truncation_info: 截断信息字典
+        state_save_batches: 标记批次列表
+        admission_control: 准入控制配置
+    """
+    import csv
+    
+    # 读取request_traces.csv
+    request_traces_csv = os.path.join(exp_dir, 'request_traces.csv')
+    if not os.path.exists(request_traces_csv):
+        print("No request_traces.csv found, skipping performance metrics plot")
+        return
+    
+    # 读取batch_snapshots.csv获取时间信息（用于标记线）
+    batch_csv = os.path.join(exp_dir, 'batch_snapshots.csv')
+    df_batch = pd.read_csv(batch_csv) if os.path.exists(batch_csv) else None
+    
+    # 读取请求数据
+    df_requests = pd.read_csv(request_traces_csv)
+    
+    # 过滤出已完成的请求（completion_time不为NaN）
+    df_completed = df_requests[df_requests['completion_time'].notna()].copy()
+    
+    if df_completed.empty:
+        print("No completed requests found, skipping performance metrics plot")
+        return
+    
+    # 按completion_time排序（应该已经排序了，但确保一下）
+    df_completed = df_completed.sort_values('completion_time')
+    
+    # 计算累积指标
+    times = []
+    avg_throughputs = []
+    avg_latencies = []
+    
+    # 按completion_time分组，处理同一时刻完成的多个请求
+    grouped = df_completed.groupby('completion_time')
+    
+    cumulative_decode_length = 0
+    cumulative_total_delay = 0
+    cumulative_count = 0
+    
+    for completion_time, group in grouped:
+        # 累加该时刻完成的所有请求
+        cumulative_decode_length += group['decode_length'].sum()
+        cumulative_total_delay += group['total_delay'].sum()
+        cumulative_count += len(group)
+        
+        # 计算平均值
+        if completion_time > 0:
+            avg_throughput = cumulative_decode_length / completion_time
+            avg_latency = cumulative_total_delay / cumulative_count
+            
+            times.append(completion_time)
+            avg_throughputs.append(avg_throughput)
+            avg_latencies.append(avg_latency)
+    
+    if not times:
+        print("No valid data points for performance metrics")
+        return
+    
+    # 创建2x1子图
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
+    
+    # 添加标题
+    title_lines = []
+    
+    # 第一行：模式信息
+    if mode == 'explore':
+        title_lines.append("Mode: EXPLORE - Performance Metrics")
+    elif mode == 'truncate' and truncation_info:
+        truncation_batch = truncation_info.get('truncation_batch_id', 'N/A')
+        truncation_time = truncation_info.get('truncation_time', 0)
+        title_lines.append(f"Mode: TRUNCATE (batch_{truncation_batch} @ t={truncation_time:.2f}) - Performance Metrics")
+    else:
+        title_lines.append("Performance Metrics: Throughput and Latency")
+    
+    # 添加准入控制信息
+    if admission_control and admission_control.get('enabled'):
+        threshold = admission_control.get('threshold', 1.0)
+        title_lines.append(f"Admission Control: {threshold:.1%}")
+    
+    # 统计信息
+    overall_stats = []
+    overall_stats.append(f"Total Completed: {cumulative_count}")
+    overall_stats.append(f"Total Decode Tokens: {cumulative_decode_length}")
+    if times:
+        final_throughput = avg_throughputs[-1]
+        final_latency = avg_latencies[-1]
+        overall_stats.append(f"Final Avg Throughput: {final_throughput:.2f} tokens/time")
+        overall_stats.append(f"Final Avg Latency: {final_latency:.4f}")
+    
+    title_lines.append("Overall Stats: " + "  |  ".join(overall_stats))
+    
+    # 设置总标题
+    if title_lines:
+        suptitle_text = "\n".join(title_lines)
+        fig.suptitle(suptitle_text, fontsize=11, fontweight='bold', y=0.99,
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.3))
+    
+    # ========== 第一个子图：平均解码吞吐量 ==========
+    ax1.plot(times, avg_throughputs,
+            label='Average Decode Throughput',
+            color='blue', linewidth=2, marker='o', markersize=2, alpha=0.8)
+    
+    # 添加标记线（如果有）
+    if state_save_batches and df_batch is not None and not df_batch.empty:
+        for batch_id in state_save_batches:
+            batch_rows = df_batch[df_batch['batch_id'] == batch_id]
+            if not batch_rows.empty:
+                save_time = batch_rows['time'].iloc[0]
+                ax1.axvline(x=save_time, color='red', linestyle='--', linewidth=1.5,
+                           alpha=0.6)
+        
+        # 添加图例标记
+        if state_save_batches:
+            if mode == 'truncate':
+                label = f'Truncation Point (batch_{state_save_batches[0]})'
+            else:
+                label = f'Candidate Points {state_save_batches}'
+            ax1.plot([], [], color='red', linestyle='--', linewidth=1.5,
+                    alpha=0.6, label=label)
+    
+    # 添加arrival_end标记线（如果有）
+    if df_requests is not None and not df_requests.empty:
+        arrival_end_time = df_requests['arrival_time'].max()
+        ax1.axvline(x=arrival_end_time, color='black', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Arrival End ({arrival_end_time:.1f})')
+    
+    # 添加仿真结束时间的标记线（绿色）
+    if df_batch is not None and not df_batch.empty:
+        sim_end_time = df_batch['time'].max()
+        ax1.axvline(x=sim_end_time, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Simulation End ({sim_end_time:.1f})')
+    
+    ax1.set_xlabel('Time', fontsize=12)
+    ax1.set_ylabel('Average Decode Throughput (tokens/time)', fontsize=12)
+    ax1.set_title('Average Decode Throughput Over Time', fontsize=14, fontweight='bold')
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.set_ylim(bottom=0)
+    
+    # ========== 第二个子图：平均延迟 ==========
+    ax2.plot(times, avg_latencies,
+            label='Average Latency',
+            color='orange', linewidth=2, marker='s', markersize=2, alpha=0.8)
+    
+    # 添加标记线（如果有）
+    if state_save_batches and df_batch is not None and not df_batch.empty:
+        for batch_id in state_save_batches:
+            batch_rows = df_batch[df_batch['batch_id'] == batch_id]
+            if not batch_rows.empty:
+                save_time = batch_rows['time'].iloc[0]
+                ax2.axvline(x=save_time, color='red', linestyle='--', linewidth=1.5,
+                           alpha=0.6)
+        
+        # 添加图例标记
+        if state_save_batches:
+            if mode == 'truncate':
+                label = f'Truncation Point (batch_{state_save_batches[0]})'
+            else:
+                label = f'Candidate Points {state_save_batches}'
+            ax2.plot([], [], color='red', linestyle='--', linewidth=1.5,
+                    alpha=0.6, label=label)
+    
+    # 添加arrival_end标记线（如果有）
+    if df_requests is not None and not df_requests.empty:
+        arrival_end_time = df_requests['arrival_time'].max()
+        ax2.axvline(x=arrival_end_time, color='black', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Arrival End ({arrival_end_time:.1f})')
+    
+    # 添加仿真结束时间的标记线（绿色）
+    if df_batch is not None and not df_batch.empty:
+        sim_end_time = df_batch['time'].max()
+        ax2.axvline(x=sim_end_time, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Simulation End ({sim_end_time:.1f})')
+    
+    ax2.set_xlabel('Time', fontsize=12)
+    ax2.set_ylabel('Average Latency (time units)', fontsize=12)
+    ax2.set_title('Average Latency Over Time', fontsize=14, fontweight='bold')
+    ax2.legend(loc='upper right', fontsize=10)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.set_ylim(bottom=0)
+    
+    # 调整布局
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    
+    # 保存图片
+    output_path = os.path.join(exp_dir, 'performance_metrics.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Performance metrics saved to: {output_path}")
+    plt.close(fig)
 
 
 def main():

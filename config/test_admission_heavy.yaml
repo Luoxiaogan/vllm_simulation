@@ -1,0 +1,45 @@
+# 重负载测试配置：触发准入控制
+# 使用方法：python experiments/run_with_truncation.py --config config/test_admission_heavy.yaml --mode explore
+
+# 初始请求生成配置
+generation:
+  enabled: true
+  types: "{(50,50,20.0)}"  # 更大的请求，更高的到达率
+  num_requests: 5000             
+  output: "data/input/test_admission_heavy.csv"
+  seed: 42
+
+# 探索配置
+explore:
+  candidate_batches: []
+
+# 准入控制配置
+admission_control:
+  enabled: true
+  threshold: 0.7  # 较低的阈值，更容易触发
+
+# 线性回归区间配置
+regression_interval: [50, 150]
+
+system:
+  M_total: 2000  # 较小的内存，更容易达到阈值
+  B: 2000
+  d_0: 0.003
+  d_1: 0.00032
+
+control:
+  queue_policy: FCFS
+  preemption_mode: sacrifice
+  preemption_strategy: aggressive
+  allow_waiting_preempt: false
+  victim_policy: LIFO
+
+data:
+  request_file: data/input/test_admission_heavy.csv
+  experiments_dir: data/experiments
+  L_filter: null
+
+experiment:
+  seed: 42
+  verbose: true
+  progress_interval: 20

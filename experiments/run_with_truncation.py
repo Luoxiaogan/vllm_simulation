@@ -176,28 +176,68 @@ def run_simulation(config: Dict, mode: str = 'explore') -> Dict[str, Any]:
     # 根据模式选择仿真器
     print(f"\n初始化系统...")
     
-    if mode == 'explore':
-        # 探索模式：使用普通仿真器
-        print("使用探索模式仿真器")
-        simulator = VLLMSimulator(config, control_policy)
+    # 检查是否启用准入控制
+    admission_config = config.get('admission_control', {})
+    admission_enabled = admission_config.get('enabled', False)
+    
+    if admission_enabled:
+        # 使用支持准入控制的仿真器
+        from simulation.vllm_simulator_with_truncation_admission_control import \
+            VLLMSimulatorWithTruncationAdmissionControl
+        
+        print(f"准入控制已启用，阈值: {admission_config.get('threshold', 1.0)}")
+        
+        if mode == 'explore':
+            # 探索模式 + 准入控制
+            print("使用探索模式仿真器（带准入控制）")
+            simulator = VLLMSimulatorWithTruncationAdmissionControl(
+                config=config,
+                control_policy=control_policy,
+                truncation_batch_id=None,  # 探索模式不需要截断
+                truncation_config=None
+            )
+        else:
+            # 截断模式 + 准入控制
+            print("使用截断模式仿真器（带准入控制）")
+            truncation_config = config.get('truncation', {})
+            truncation_batch_id = truncation_config.get('batch_id')
+            
+            if not truncation_batch_id:
+                raise ValueError("截断模式需要指定 truncation.batch_id")
+            
+            # 准备截断后的生成配置
+            truncation_generation = truncation_config.get('new_generation', {})
+            
+            simulator = VLLMSimulatorWithTruncationAdmissionControl(
+                config=config,
+                control_policy=control_policy,
+                truncation_batch_id=truncation_batch_id,
+                truncation_config={'generation': truncation_generation}
+            )
     else:
-        # 截断模式：使用截断仿真器
-        print("使用截断模式仿真器")
-        truncation_config = config.get('truncation', {})
-        truncation_batch_id = truncation_config.get('batch_id')
-        
-        if not truncation_batch_id:
-            raise ValueError("截断模式需要指定 truncation.batch_id")
-        
-        # 准备截断后的生成配置
-        truncation_generation = truncation_config.get('new_generation', {})
-        
-        simulator = VLLMSimulatorWithTruncation(
-            config=config,
-            control_policy=control_policy,
-            truncation_batch_id=truncation_batch_id,
-            truncation_config={'generation': truncation_generation}
-        )
+        # 不使用准入控制
+        if mode == 'explore':
+            # 探索模式：使用普通仿真器
+            print("使用探索模式仿真器")
+            simulator = VLLMSimulator(config, control_policy)
+        else:
+            # 截断模式：使用截断仿真器
+            print("使用截断模式仿真器")
+            truncation_config = config.get('truncation', {})
+            truncation_batch_id = truncation_config.get('batch_id')
+            
+            if not truncation_batch_id:
+                raise ValueError("截断模式需要指定 truncation.batch_id")
+            
+            # 准备截断后的生成配置
+            truncation_generation = truncation_config.get('new_generation', {})
+            
+            simulator = VLLMSimulatorWithTruncation(
+                config=config,
+                control_policy=control_policy,
+                truncation_batch_id=truncation_batch_id,
+                truncation_config={'generation': truncation_generation}
+            )
     
     # 运行仿真
     import time
@@ -407,6 +447,11 @@ def run_simulation(config: Dict, mode: str = 'explore') -> Dict[str, Any]:
                     mark_batches = [truncation_batch_id]
                     print(f"截断点: {mark_batches}")
             
+            # 获取regression_interval配置
+            regression_interval = config.get('regression_interval', None)
+            if regression_interval:
+                print(f"线性回归区间: {regression_interval}")
+            
             # 调用可视化函数，传递mode和额外参数
             plot_queue_dynamics(
                 csv_path=batch_snapshots_path, 
@@ -420,7 +465,9 @@ def run_simulation(config: Dict, mode: str = 'explore') -> Dict[str, Any]:
                 mode=mode,  # 传递模式
                 theoretical_lambda=theoretical_lambda,  # 传递理论lambda（探索模式）
                 truncation_info=truncation_info_for_plot,  # 传递截断信息（截断模式）
-                request_file=csv_path  # 传递原始请求文件路径
+                request_file=csv_path,  # 传递原始请求文件路径
+                regression_interval=regression_interval,  # 传递回归区间
+                admission_control=config.get('admission_control')  # 传递准入控制配置
             )
             
             # 如果是sacrifice模式，生成sacrifice相关图表

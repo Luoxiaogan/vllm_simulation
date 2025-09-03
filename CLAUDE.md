@@ -3,6 +3,11 @@
 ## 项目目标
 在运筹学(Operations Research)框架下，对LLM服务的流体模型ODE进行仿真，验证流体极限(Fluid Limit)理论。
 
+## 核心文档索引
+- **截断仿真深度分析**：[`documentation/truncation_simulation_analysis.md`](documentation/truncation_simulation_analysis.md) - 截断仿真的完整技术文档
+- **流体建模理论**：[`documentation/fluid_modeling.tex`](documentation/fluid_modeling.tex) - 数学模型推导
+- **使用指南**：[`documentation/`](documentation/) 目录包含所有操作指南
+
 ## 系统架构
 
 ### PD分离（Prefill-Decode Disaggregation）
@@ -290,6 +295,11 @@ lim_{n→∞} X^(n)(t)/n → X(t)
 
 ## 使用方法
 
+> **重要文档**：
+> - 截断仿真功能详解：[`documentation/truncation_simulation_analysis.md`](documentation/truncation_simulation_analysis.md)
+> - 使用说明：[`documentation/使用说明.md`](documentation/使用说明.md)
+> - 实验小手册：[`documentation/实验小手册.md`](documentation/实验小手册.md)
+
 ### 快速开始
 ```bash
 # 生成测试数据（一键生成所有配置）
@@ -362,6 +372,8 @@ experiment:
   - 绿色虚线：Simulation End（仿真结束）
 
 ## 截断仿真模式
+
+> **深度文档**：关于截断仿真的详细架构设计、实现机制、理论意义和高级应用，请参阅 [`documentation/truncation_simulation_analysis.md`](documentation/truncation_simulation_analysis.md)
 
 ### 探索模式（Explore Mode）
 用于完整运行仿真并标记候选截断点：

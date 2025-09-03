@@ -1,17 +1,22 @@
-# 探索模式配置：完整运行仿真，标记候选截断点
-# 使用方法：python experiments/run_with_truncation.py --config config/explore_truncation.yaml --mode explore
+# 探索模式配置：完整运行仿真，标记候选截断点，启用准入控制
+# 使用方法：python experiments/run_with_truncation.py --config config/explore_truncation_admission_control.yaml --mode explore
 
 # 初始请求生成配置
 generation:
   enabled: true
-  types: "{(20,20,5.1)}"          # 初始请求类型（高到达率）
-  num_requests: 22000             
-  output: "data/input/explore.csv"
+  types: "{(20,20,6)}"          # 初始请求类型（高到达率）
+  num_requests: 120000             
+  output: "data/input/explore_admission.csv"
   seed: 42
 
 # 探索配置：标记候选截断点
 explore:
   candidate_batches: [2950, 3030, 3100, 3150]  # 候选截断点列表，会在图上用红色虚线标记
+
+# 准入控制配置（新增）
+admission_control:
+  enabled: true
+  threshold: 0.5  
 
 # 线性回归区间配置（用于arrival_dynamics分析）
 regression_interval: [2500, 4000]  # 时间区间 [start, end]，用于计算该时间段的平均到达率
@@ -30,7 +35,7 @@ control:
   victim_policy: LIFO
 
 data:
-  request_file: data/input/explore.csv  # 会被generation覆盖
+  request_file: data/input/explore_admission.csv  # 会被generation覆盖
   experiments_dir: data/experiments
   L_filter: null
 

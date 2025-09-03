@@ -1,16 +1,21 @@
-# 截断模式配置：运行到截断点，然后切换到新参数
-# 使用方法：python experiments/run_with_truncation.py --config config/apply_truncation.yaml --mode truncate
+# 截断模式配置：运行到截断点，然后切换到新参数，启用准入控制
+# 使用方法：python experiments/run_with_truncation.py --config config/apply_truncation_admission_control.yaml --mode truncate
 
 # 截断配置
 truncation:
-  batch_id: 3400  # 单个截断点（不能是列表）# 3350
+  batch_id: 3400  # 单个截断点（不能是列表）
   
   # 截断后的新生成配置
   new_generation:
     types: "{(20,20,5.1)}"        # 与探索实验相同的types格式
-    rate_list: [5.9]               # 覆盖到达率：5.1 -> 1.1
-    num_requests: 12000            # 生成10000个新请求
+    rate_list: [5.9]               # 覆盖到达率：5.1 -> 5.9（提高）
+    num_requests: 12000            # 生成12000个新请求
     seed: 123                      # 不同的随机种子
+
+# 准入控制配置（新增）
+admission_control:
+  enabled: true
+  threshold: 0.75  # 更严格的阈值，当内存使用率达到75%时停止准入
 
 # 线性回归区间配置（用于arrival_dynamics分析）
 regression_interval: [3200, 4000]  # 时间区间 [start, end]，用于计算该时间段的平均到达率
